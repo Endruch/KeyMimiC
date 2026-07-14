@@ -187,8 +187,10 @@ class ThreadPanel(ttk.Frame):
         """Show visual keyboard editor."""
         def add_command(cmd):
             # Insert at cursor position
-            self.text.insert("insert", cmd + "\n")
+            self.text.insert("insert", cmd)
             self.text.see("insert")
+            # Trigger auto-save
+            self.text.event_generate("<<Modified>>")
 
         VisualEditor(self, add_command)
 

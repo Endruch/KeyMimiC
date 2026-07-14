@@ -173,8 +173,8 @@ class Recorder:
         Generate macro text from recorded events.
 
         Optimizes:
-        1. Multiple press events of same key → single press with total duration
-        2. press + sleep + release → press with duration
+        1. Removes duplicate consecutive press events (Windows spam when key is held)
+        2. Merges press + sleep + release into single press with duration
 
         Returns:
             String containing macro commands
@@ -182,73 +182,72 @@ class Recorder:
         if not self.events:
             return "# Empty macro\n"
 
-        # Step 1: Remove duplicate consecutive presses (key held down)
-        # Windows generates multiple press events when key is held
+        # Step 1: Remove duplicate consecutive presses
+        # When a key is held, Windows generates: press, press, press, ..., release
+        # We want: press, release (with accumulated sleep time in between)
         deduplicated = []
         i = 0
+
         while i < len(self.events):
             name, args = self.events[i]
 
             if name == 'press':
-                # Collect all consecutive presses of the same key
                 key_code = args[0]
-                total_duration = 0.0
-                j = i
 
-                while j < len(self.events):
-                    evt_name, evt_args = self.events[j]
+                # Skip all consecutive duplicate presses of the same key
+                while (i + 1 < len(self.events) and
+                       self.events[i + 1][0] == 'press' and
+                       self.events[i + 1][1][0] == key_code):
+                    i += 1  # Skip duplicate press
 
-                    # If this is a press of same key, skip it and accumulate duration
-                    if evt_name == 'press' and evt_args[0] == key_code:
-                        j += 1
-                        # Add sleep after this press if exists
-                        if j < len(self.events) and self.events[j][0] == 'sleep':
-                            total_duration += self.events[j][1][0]
-                            j += 1
-                    # If we hit release of same key, include duration and stop
-                    elif evt_name == 'release' and evt_args[0] == key_code:
-                        deduplicated.append(('press', [key_code]))
-                        if total_duration > 0.01:
-                            deduplicated.append(('sleep', [round(total_duration, 2)]))
-                        deduplicated.append(('release', [key_code]))
-                        j += 1
-                        break
-                    # If we hit sleep, accumulate and continue
-                    elif evt_name == 'sleep':
-                        total_duration += evt_args[0]
-                        j += 1
-                    else:
-                        # Different event, stop collecting
-                        break
-
-                # If no release found, just add single press
-                if j == i + 1 or (j > i and self.events[j-1][0] != 'release'):
-                    deduplicated.append(('press', [key_code]))
-                    j = i + 1
-
-                i = j
+                # Add the single press
+                deduplicated.append(('press', [key_code]))
+                i += 1
             else:
                 deduplicated.append((name, args))
                 i += 1
 
-        # Step 2: Merge press + sleep + release into press with duration
-        optimized = []
+        # Step 2: Merge consecutive sleep events
+        merged_sleeps = []
         i = 0
+
         while i < len(deduplicated):
             name, args = deduplicated[i]
 
-            # Check for press + sleep + release pattern
+            if name == 'sleep':
+                total_sleep = args[0]
+
+                # Accumulate consecutive sleeps
+                while (i + 1 < len(deduplicated) and
+                       deduplicated[i + 1][0] == 'sleep'):
+                    i += 1
+                    total_sleep += deduplicated[i][1][0]
+
+                merged_sleeps.append(('sleep', [round(total_sleep, 2)]))
+                i += 1
+            else:
+                merged_sleeps.append((name, args))
+                i += 1
+
+        # Step 3: Merge press + sleep + release into press with duration
+        optimized = []
+        i = 0
+
+        while i < len(merged_sleeps):
+            name, args = merged_sleeps[i]
+
+            # Look for pattern: press X, sleep Y, release X
             if (name == 'press' and
-                i + 2 < len(deduplicated) and
-                deduplicated[i + 1][0] == 'sleep' and
-                deduplicated[i + 2][0] == 'release' and
-                deduplicated[i + 2][1][0] == args[0]):
+                i + 2 < len(merged_sleeps) and
+                merged_sleeps[i + 1][0] == 'sleep' and
+                merged_sleeps[i + 2][0] == 'release' and
+                merged_sleeps[i + 2][1][0] == args[0]):
 
                 # Merge into press with duration
                 code = args[0]
-                duration = deduplicated[i + 1][1][0]
+                duration = merged_sleeps[i + 1][1][0]
                 optimized.append(('press', [code, duration]))
-                i += 3
+                i += 3  # Skip sleep and release
             else:
                 optimized.append((name, args))
                 i += 1
@@ -257,11 +256,10 @@ class Recorder:
         lines = []
         for name, args in optimized:
             if name == 'press':
+                key_name = get_key_display_name(args[0])
                 if len(args) == 1:
-                    key_name = get_key_display_name(args[0])
                     lines.append(f"press {key_name}")
                 else:
-                    key_name = get_key_display_name(args[0])
                     duration = args[1]
                     lines.append(f"press {key_name} {duration}")
 

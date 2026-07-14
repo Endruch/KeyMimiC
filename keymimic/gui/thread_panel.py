@@ -72,12 +72,14 @@ class ThreadPanel(ttk.Frame):
         self.record_btn.pack(side="left", padx=2)
 
         ttk.Button(toolbar, text="Visual Editor", command=self._show_visual_editor).pack(side="left", padx=2)
-        ttk.Button(toolbar, text="Help", command=self._show_help).pack(side="left", padx=2)
         ttk.Button(toolbar, text="Settings", command=self._show_settings).pack(side="left", padx=2)
 
         self.loop_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(toolbar, text="Loop",
                        variable=self.loop_var).pack(side="left", padx=10)
+
+        # Help button on the right side
+        ttk.Button(toolbar, text="Help", command=self._show_help).pack(side="right", padx=2)
 
         # Text editor
         self.text = scrolledtext.ScrolledText(

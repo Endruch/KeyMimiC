@@ -116,21 +116,12 @@ class HotkeyManager:
         if not code:
             return
 
-        # Check if this code is registered with modifiers
-        has_modifier_hotkeys = any(
-            k[0] == code and (k[1] or k[2] or k[3])
-            for k in self.hotkey_map
-        )
+        # ALWAYS check modifier state for accurate matching
+        ctrl = (ctypes.windll.user32.GetKeyState(0x11) & 0x8000) != 0
+        shift = (ctypes.windll.user32.GetKeyState(0x10) & 0x8000) != 0
+        alt = (ctypes.windll.user32.GetKeyState(0x12) & 0x8000) != 0
 
-        # Only check modifier state if needed
-        if has_modifier_hotkeys:
-            ctrl = (ctypes.windll.user32.GetKeyState(0x11) & 0x8000) != 0
-            shift = (ctypes.windll.user32.GetKeyState(0x10) & 0x8000) != 0
-            alt = (ctypes.windll.user32.GetKeyState(0x12) & 0x8000) != 0
-        else:
-            ctrl = shift = alt = False
-
-        # Check if this key combination is registered
+        # Check if this exact key combination is registered
         key = (code, ctrl, shift, alt)
         if key in self.hotkey_map:
             action = self.hotkey_map[key]

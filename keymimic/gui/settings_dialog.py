@@ -226,7 +226,7 @@ class SettingsDialog(tk.Toplevel):
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         window_width = 600
-        window_height = 400
+        window_height = 450  # Increased from 400 to show buttons
         x = (screen_width - window_width) // 2
         y = (screen_height - window_height) // 2
         self.geometry(f"{window_width}x{window_height}+{x}+{y}")

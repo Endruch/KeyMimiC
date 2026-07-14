@@ -167,6 +167,29 @@ class VisualEditor(tk.Toplevel):
         self._add_mouse_btn(mouse_frame, "Left Click", "click()")
         self._add_mouse_btn(mouse_frame, "Right Click", "right_click()")
 
+        # Sleep button
+        sleep_frame = ttk.Frame(main_frame)
+        sleep_frame.pack(pady=10)
+
+        ttk.Label(sleep_frame, text="Add delay:", font=("Segoe UI", 10)).pack(side="left", padx=5)
+
+        sleep_buttons = [
+            ("0.1s", 0.1),
+            ("0.5s", 0.5),
+            ("1.0s", 1.0),
+            ("2.0s", 2.0),
+            ("Custom", None)
+        ]
+
+        for label, duration in sleep_buttons:
+            btn = ttk.Button(
+                sleep_frame,
+                text=label,
+                command=lambda d=duration: self._add_sleep(d),
+                width=10
+            )
+            btn.pack(side="left", padx=3)
+
         # Close button
         close_btn = ttk.Button(
             main_frame,
@@ -248,3 +271,23 @@ class VisualEditor(tk.Toplevel):
         """Add a spacer."""
         spacer = ttk.Frame(parent, width=width * 10)
         spacer.pack(side="left")
+
+    def _add_sleep(self, duration):
+        """Add sleep command to macro."""
+        from tkinter import simpledialog
+
+        if duration is None:
+            # Custom duration dialog
+            duration = simpledialog.askfloat(
+                "Custom Delay",
+                "Enter delay duration in seconds:",
+                minvalue=0.01,
+                maxvalue=60.0,
+                initialvalue=1.0
+            )
+            if duration is None:
+                return  # Cancelled
+
+        # Add sleep command
+        command = f"sleep {duration}\n"
+        self.callback(command)

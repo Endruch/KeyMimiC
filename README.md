@@ -241,13 +241,23 @@ KeyMimic_2.0/
 
 ## 💾 Data Location
 
+### Profiles
 Profiles saved in:
 ```
 Documents/KeyMimic/profiles/
 ├── thread_1_profiles.json
 ├── thread_2_profiles.json
+├── hotkeys.json
 └── ...
 ```
+
+### Debug Logs
+Debug information automatically saved to:
+```
+Documents/KeyMimic/debug.log
+```
+
+See [DEBUG_LOGGING.md](DEBUG_LOGGING.md) for details on how to use debug logs.
 
 ## 🎓 Tips
 

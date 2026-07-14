@@ -12,7 +12,6 @@ class VisualEditor(tk.Toplevel):
     def __init__(self, parent, callback):
         super().__init__(parent)
         self.title("Visual Keyboard Editor")
-        self.geometry("1000x500")
         self.transient(parent)
         self.callback = callback
 
@@ -23,11 +22,18 @@ class VisualEditor(tk.Toplevel):
 
         self._build_ui()
 
-        # Center on parent
+        # Auto-size based on content and center
         self.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{x}+{y}")
+        self.resizable(True, True)
+
+        # Center on screen
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        window_width = 1100
+        window_height = 600
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     def _build_ui(self):
         """Build the visual editor UI."""
@@ -211,7 +217,7 @@ class VisualEditor(tk.Toplevel):
             # Regular key (new syntax: no parentheses/quotes)
             def on_click():
                 self.callback(f"press {key_name}")
-                self.callback(f"sleep 0.05")
+                self.callback(f"sleep 0.5")
                 self.callback(f"release {key_name}")
 
         btn.config(command=on_click)

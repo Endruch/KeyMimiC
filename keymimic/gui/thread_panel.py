@@ -6,11 +6,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 from datetime import datetime
 
-from ..core.macro_parser import parse_macro
-from ..core.macro_runner import MacroRunner
-from ..core.recorder import KeyRecorder
+from ..core.automation import parse_macro, validate_commands, MacroExecutor
+from ..managers import Recorder
 from ..core.constants import IS_WINDOWS
-from ..utils.profile_manager import ProfileManager
+from ..config import ProfileManager
 from .help_dialog import HelpDialog
 from .visual_editor import VisualEditor
 from .settings_dialog import SettingsDialog
@@ -39,12 +38,6 @@ class ThreadPanel(ttk.Frame):
 
     def _build_ui(self):
         """Build the UI components."""
-        # Header with close button
-        header = ttk.Frame(self)
-        header.pack(fill="x", pady=(0, 4))
-        ttk.Label(header, text=f"Thread {self.panel_id}",
-                 font=("Segoe UI", 11, "bold")).pack(side="left")
-        ttk.Button(header, text="X", width=3, command=self._close).pack(side="right")
 
         # Profile selector
         profile_frame = ttk.Frame(self)
@@ -73,6 +66,7 @@ class ThreadPanel(ttk.Frame):
         toolbar = ttk.Frame(self)
         toolbar.pack(fill="x", pady=(4, 2))
 
+        # Record button (will show both start and stop hotkeys)
         self.record_btn = ttk.Button(toolbar, text="Record",
                                      command=self._toggle_recording)
         self.record_btn.pack(side="left", padx=2)
@@ -123,7 +117,8 @@ class ThreadPanel(ttk.Frame):
     def _close(self):
         """Close this panel."""
         self.stop()
-        self.on_close(self.panel_id)
+        if self.on_close:
+            self.on_close(self.panel_id)
 
     def _on_profile_change(self, event=None):
         """Handle profile selection change."""
@@ -208,36 +203,50 @@ class ThreadPanel(ttk.Frame):
         SettingsDialog(self, self.hotkey_config, on_save)
 
     def _toggle_recording(self):
-        """Toggle keyboard recording."""
+        """Toggle keyboard recording (for button click)."""
+        if self.is_recording:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        """Start keyboard recording."""
         if not IS_WINDOWS:
             messagebox.showwarning("Not Available", "Recording is only available on Windows")
             return
 
         if self.is_recording:
-            # STOP recording
-            self.is_recording = False
-            self.record_btn.config(text="Record")
+            return  # Already recording
 
-            if self.recorder:
-                macro_text = self.recorder.stop()
+        # START recording
+        self.is_recording = True
+        self.update_hotkey_labels()  # Update button to show stop hotkey
+        self.recorder = Recorder()
+        self.recorder.start(record_mouse=self.hotkey_config.record_mouse)
+        self._log("Recording started... Press keys" + (" and mouse" if self.hotkey_config.record_mouse else ""))
 
-                # Create new profile with recorded macro
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                profile_name = f"Recording {timestamp}"
-                self.profile_manager.add_profile(profile_name, macro_text)
+    def _stop_recording(self):
+        """Stop keyboard recording."""
+        if not self.is_recording:
+            return  # Not recording
 
-                self.profile_combo['values'] = list(self.profile_manager.profiles.keys())
-                self.profile_var.set(profile_name)
-                self._on_profile_change()
+        # STOP recording
+        self.is_recording = False
+        self.update_hotkey_labels()  # Update button to show start hotkey
 
-                self._log(f"Recording stopped. Saved as '{profile_name}'")
-        else:
-            # START recording
-            self.is_recording = True
-            self.record_btn.config(text="Stop Recording")
-            self.recorder = KeyRecorder()
-            self.recorder.start()
-            self._log("Recording started... Press keys")
+        if self.recorder:
+            macro_text = self.recorder.stop()
+
+            # Create new profile with recorded macro
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            profile_name = f"Recording {timestamp}"
+            self.profile_manager.add_profile(profile_name, macro_text)
+
+            self.profile_combo['values'] = list(self.profile_manager.profiles.keys())
+            self.profile_var.set(profile_name)
+            self._on_profile_change()
+
+            self._log(f"Recording stopped. Saved as '{profile_name}'")
 
     def start(self):
         """Start macro execution."""
@@ -246,7 +255,8 @@ class ThreadPanel(ttk.Frame):
 
         raw = self.text.get("1.0", "end-1c")
         try:
-            thread_name, humanize, commands = parse_macro(raw)
+            metadata, commands = parse_macro(raw)
+            validate_commands(commands)
         except Exception as exc:
             messagebox.showerror("Parse Error", str(exc))
             return
@@ -255,12 +265,15 @@ class ThreadPanel(ttk.Frame):
             messagebox.showwarning("Empty", "No commands in macro.")
             return
 
-        self.runner = MacroRunner(
-            thread_name or f"Thread {self.panel_id}",
+        thread_name = metadata.get('thread_name') or f"Thread {self.panel_id}"
+        humanize = metadata.get('humanize', 0)
+
+        self.runner = MacroExecutor(
+            thread_name,
             commands,
-            humanize,
-            self._log,
-            loop=self.loop_var.get()
+            loop=self.loop_var.get(),
+            humanize=humanize,
+            log_callback=self._log
         )
         self.runner.start()
         self.start_btn.config(state="disabled")
@@ -288,9 +301,13 @@ class ThreadPanel(ttk.Frame):
         if not self.hotkey_config:
             return
 
-        # Update Record button
-        record_key = self.hotkey_config.get_hotkey("record")["key"]
-        self.record_btn.config(text=f"Record {record_key}")
+        # Update Record button - show start or stop recording hotkey depending on state
+        if self.is_recording:
+            stop_record_key = self.hotkey_config.get_hotkey("stop_record")["key"]
+            self.record_btn.config(text=f"Stop Recording {stop_record_key}")
+        else:
+            start_record_key = self.hotkey_config.get_hotkey("start_record")["key"]
+            self.record_btn.config(text=f"Record {start_record_key}")
 
         # Update Start button
         start_key = self.hotkey_config.get_hotkey("start")["key"]

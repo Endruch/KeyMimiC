@@ -4,35 +4,50 @@ KeyMimic v2.0 - Keyboard & Mouse Automation
 Professional macro automation tool for Windows.
 
 Features:
-- Symbolic key names (press('s') instead of press(31))
-- Mouse action aliases (mouse_left(), mouse_right())
+- Optimized Windows hooks with zero-allocation callbacks
+- Clean architecture with composition over inheritance
+- Thread-safe profile and configuration management
+- Symbolic key names for easy macro writing
 - Visual keyboard editor for generating macros
-- Help dialog with comprehensive key code reference
-- Multi-threaded macro execution
-- Profile management
-- Keyboard recording
+- Profile management with hot-reloading
+- Keyboard and mouse recording
 """
 
 __version__ = "2.0.0"
 __author__ = "KeyMimic Team"
 
+# Core exports
 from .core import (
     SCAN_CODES,
+    SCAN_TO_CODE,
+    SCAN_TO_CODE_EXT,
     IS_WINDOWS,
     KEY_NAMES,
     resolve_key,
     get_key_display_name,
-    key_down,
-    key_up,
-    mouse_click,
-    mouse_move,
-    parse_macro,
-    MacroRunner,
-    KeyRecorder,
 )
 
-from .utils import (
+# Automation exports
+from .core.automation import (
+    parse_macro,
+    validate_commands,
+    MacroExecutor,
+    send_key_down,
+    send_key_up,
+    send_mouse_move,
+    send_mouse_click,
+)
+
+# Manager exports
+from .managers import (
+    HotkeyManager,
+    Recorder,
+)
+
+# Config exports
+from .config import (
     ProfileManager,
+    HotkeyConfig,
 )
 
 # GUI imports are optional (requires tkinter)
@@ -54,21 +69,31 @@ except ImportError:
 __all__ = [
     '__version__',
     '__author__',
+    # Core
     'SCAN_CODES',
+    'SCAN_TO_CODE',
+    'SCAN_TO_CODE_EXT',
     'IS_WINDOWS',
     'KEY_NAMES',
     'resolve_key',
     'get_key_display_name',
-    'key_down',
-    'key_up',
-    'mouse_click',
-    'mouse_move',
+    # Automation
     'parse_macro',
-    'MacroRunner',
-    'KeyRecorder',
+    'validate_commands',
+    'MacroExecutor',
+    'send_key_down',
+    'send_key_up',
+    'send_mouse_move',
+    'send_mouse_click',
+    # Managers
+    'HotkeyManager',
+    'Recorder',
+    # Config
+    'ProfileManager',
+    'HotkeyConfig',
+    # GUI
     'MainWindow',
     'ThreadPanel',
     'HelpDialog',
     'VisualEditor',
-    'ProfileManager',
 ]

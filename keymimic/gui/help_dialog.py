@@ -12,16 +12,20 @@ class HelpDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("KeyMimic Help - Key Code Reference")
-        self.geometry("900x700")
         self.transient(parent)
+        self.resizable(True, True)
 
         self._build_ui()
 
-        # Center on parent
+        # Center on screen with proper size
         self.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() - self.winfo_width()) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{x}+{y}")
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        window_width = 900
+        window_height = 700
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     def _build_ui(self):
         """Build the help dialog UI."""

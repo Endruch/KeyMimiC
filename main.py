@@ -6,12 +6,14 @@ Professional keyboard and mouse automation tool for Windows.
 """
 
 from keymimic.gui.main_window import MainWindow
-from keymimic.utils.profile_manager import ensure_profiles_dir
+from keymimic.config import PROFILES_DIR
 
 
 def main():
     """Main entry point for the application."""
-    ensure_profiles_dir()
+    # Ensure profile directory exists
+    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+
     app = MainWindow()
     app.mainloop()
 

@@ -65,6 +65,7 @@ if IS_WINDOWS:
     MOUSEEVENTF_LEFTUP = 0x0004
     MOUSEEVENTF_RIGHTDOWN = 0x0008
     MOUSEEVENTF_RIGHTUP = 0x0010
+    MOUSEEVENTF_ABSOLUTE = 0x8000
 
     def _extra_info():
         """Create extra info pointer for input structures."""
@@ -150,6 +151,53 @@ def send_mouse_move(dx, dy):
     inp = Input(INPUT_MOUSE, InputUnion(mi=mi))
 
     return _send_input(inp)
+
+
+def send_mouse_move_absolute(x, y):
+    """
+    Move mouse to absolute screen position.
+
+    Args:
+        x: Absolute X coordinate (pixels)
+        y: Absolute Y coordinate (pixels)
+
+    Returns:
+        Number of events successfully injected (1 on success, 0 on failure)
+    """
+    if not IS_WINDOWS:
+        return 0
+
+    # Get screen dimensions
+    screen_width = ctypes.windll.user32.GetSystemMetrics(0)
+    screen_height = ctypes.windll.user32.GetSystemMetrics(1)
+
+    # Convert to normalized coordinates (0-65535)
+    # Windows uses 0-65535 for absolute positioning
+    norm_x = int((x * 65536) / screen_width)
+    norm_y = int((y * 65536) / screen_height)
+
+    mi = MouseInput(norm_x, norm_y, 0, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, 0, _extra_info())
+    inp = Input(INPUT_MOUSE, InputUnion(mi=mi))
+
+    return _send_input(inp)
+
+
+def get_mouse_position():
+    """
+    Get current mouse position.
+
+    Returns:
+        Tuple (x, y) of current mouse position, or (0, 0) on non-Windows
+    """
+    if not IS_WINDOWS:
+        return (0, 0)
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    pt = POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return (pt.x, pt.y)
 
 
 def send_mouse_click(button='left', duration=0.03):

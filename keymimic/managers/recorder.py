@@ -9,6 +9,7 @@ import time
 from ..core.hooks import KeyboardHook, MouseHook
 from ..core.constants import SCAN_TO_CODE, SCAN_TO_CODE_EXT, IS_WINDOWS
 from ..core.key_names import get_key_display_name
+from ..core.automation.input import get_mouse_position
 
 
 # Windows message constants
@@ -46,6 +47,15 @@ class Recorder:
         self.keyboard_hook = None
         self.mouse_hook = None
 
+        # Mouse tracking for relative movements
+        self.last_mouse_pos = None
+        self.last_mouse_record_time = None
+        self.mouse_sample_interval = 0.05  # Record mouse position every 50ms
+        self.mouse_move_threshold = 10     # Minimum 10 pixels to record movement
+
+        # Starting mouse position for playback return
+        self.start_mouse_pos = None
+
     def start(self, record_mouse=None):
         """
         Start recording input.
@@ -63,6 +73,11 @@ class Recorder:
         self.recording = True
         self.events = []
         self.last_time = time.time()
+        self.last_mouse_pos = None
+        self.last_mouse_record_time = None
+
+        # Capture starting mouse position for return to origin
+        self.start_mouse_pos = get_mouse_position()
 
         # Start keyboard hook
         self.keyboard_hook = KeyboardHook(self._on_keyboard_event)
@@ -150,6 +165,7 @@ class Recorder:
             return
 
         current_time = time.time()
+        current_pos = (mouse_struct.pt.x, mouse_struct.pt.y)
 
         # Record sleep time since last event
         if self.last_time:
@@ -160,13 +176,33 @@ class Recorder:
         # Record mouse event
         if wParam == WM_LBUTTONDOWN:
             self.events.append(('click', []))
+            self.last_time = current_time
+
         elif wParam == WM_RBUTTONDOWN:
             self.events.append(('right_click', []))
-        elif wParam == WM_MOUSEMOVE:
-            # TODO: Track mouse position and record moves
-            pass
+            self.last_time = current_time
 
-        self.last_time = current_time
+        elif wParam == WM_MOUSEMOVE:
+            # Sample mouse movements (not every single event)
+            if self.last_mouse_record_time and (current_time - self.last_mouse_record_time < self.mouse_sample_interval):
+                return  # Skip - too soon since last recording
+
+            # If we have previous position, calculate relative movement
+            if self.last_mouse_pos:
+                dx = current_pos[0] - self.last_mouse_pos[0]
+                dy = current_pos[1] - self.last_mouse_pos[1]
+
+                # Only record if movement is significant
+                distance = (dx*dx + dy*dy) ** 0.5
+                if distance >= self.mouse_move_threshold:
+                    self.events.append(('move', [dx, dy]))
+                    self.last_mouse_pos = current_pos
+                    self.last_mouse_record_time = current_time
+                    self.last_time = current_time
+            else:
+                # First mouse event - just save position
+                self.last_mouse_pos = current_pos
+                self.last_mouse_record_time = current_time
 
     def _generate_macro(self):
         """
@@ -174,7 +210,9 @@ class Recorder:
 
         Optimizes:
         1. Removes duplicate consecutive press events (Windows spam when key is held)
-        2. Merges press + sleep + release into single press with duration
+        2. Merges consecutive sleep events into one
+        3. Merges consecutive move events into one (prevents mouse drift)
+        4. Merges press + sleep + release into single press with duration
 
         Returns:
             String containing macro commands
@@ -229,23 +267,47 @@ class Recorder:
                 merged_sleeps.append((name, args))
                 i += 1
 
-        # Step 3: Merge press + sleep + release into press with duration
-        optimized = []
+        # Step 3: Merge consecutive move events
+        merged_moves = []
         i = 0
 
         while i < len(merged_sleeps):
             name, args = merged_sleeps[i]
 
+            if name == 'move':
+                total_dx = args[0]
+                total_dy = args[1]
+
+                # Accumulate consecutive moves
+                while (i + 1 < len(merged_sleeps) and
+                       merged_sleeps[i + 1][0] == 'move'):
+                    i += 1
+                    total_dx += merged_sleeps[i][1][0]
+                    total_dy += merged_sleeps[i][1][1]
+
+                merged_moves.append(('move', [int(total_dx), int(total_dy)]))
+                i += 1
+            else:
+                merged_moves.append((name, args))
+                i += 1
+
+        # Step 4: Merge press + sleep + release into press with duration
+        optimized = []
+        i = 0
+
+        while i < len(merged_moves):
+            name, args = merged_moves[i]
+
             # Look for pattern: press X, sleep Y, release X
             if (name == 'press' and
-                i + 2 < len(merged_sleeps) and
-                merged_sleeps[i + 1][0] == 'sleep' and
-                merged_sleeps[i + 2][0] == 'release' and
-                merged_sleeps[i + 2][1][0] == args[0]):
+                i + 2 < len(merged_moves) and
+                merged_moves[i + 1][0] == 'sleep' and
+                merged_moves[i + 2][0] == 'release' and
+                merged_moves[i + 2][1][0] == args[0]):
 
                 # Merge into press with duration
                 code = args[0]
-                duration = merged_sleeps[i + 1][1][0]
+                duration = merged_moves[i + 1][1][0]
                 optimized.append(('press', [code, duration]))
                 i += 3  # Skip sleep and release
             else:
@@ -254,6 +316,14 @@ class Recorder:
 
         # Generate macro text
         lines = []
+
+        # Add move_to command at the start to return to starting position
+        if self.start_mouse_pos and self.record_mouse:
+            start_x, start_y = self.start_mouse_pos
+            lines.append(f"# Return to starting position")
+            lines.append(f"move_to {start_x} {start_y}")
+            lines.append("")  # Empty line for readability
+
         for name, args in optimized:
             if name == 'press':
                 key_name = get_key_display_name(args[0])

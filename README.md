@@ -11,7 +11,8 @@
 - ✅ **Individual Thread Logs** — Each thread has its own log
 - ✅ **Dynamic Threads** — Add/remove threads as needed
 - ✅ **Profile System** — Save and switch between macros
-- ✅ **Keyboard Recording** — Record actions in real-time
+- ✅ **Keyboard & Mouse Recording** — Record keyboard and mouse actions in real-time
+- ✅ **Mouse Auto-Return** — Mouse returns to starting position when macro loops
 - ✅ **Low-Level Input** — Uses Windows SendInput API with scan codes
 - ✅ **Humanize Mode** — Random timing variations for natural behavior
 - ✅ **100% English** — All interface and code in English
@@ -53,7 +54,8 @@ press 31            # Can also use numeric scan codes
 # Mouse actions
 click               # Left click
 right_click         # Right click
-move 100 50         # Move mouse (x, y)
+move 100 50         # Move mouse relative (dx, dy)
+move_to 500 300     # Move mouse to absolute position (x, y)
 
 # Timing
 sleep 1             # Wait 1 second
@@ -295,7 +297,8 @@ release ctrl
 # Click and move
 click
 sleep 0.5
-move 100 50
+move 100 50         # Move relative
+move_to 500 300     # Move to absolute position
 right_click
 ```
 

@@ -10,7 +10,7 @@ import random
 
 from ..constants import SCAN_CODES
 from ..key_names import resolve_key
-from .input import send_key_down, send_key_up, send_mouse_move, send_mouse_click
+from .input import send_key_down, send_key_up, send_mouse_move, send_mouse_click, send_mouse_move_absolute
 
 
 class MacroExecutor(threading.Thread):
@@ -228,10 +228,16 @@ class MacroExecutor(threading.Thread):
             send_mouse_click(button='right')
 
         elif name == 'move':
-            # move dx dy
+            # move dx dy (relative)
             dx = int(args[0])
             dy = int(args[1])
             send_mouse_move(dx, dy)
+
+        elif name == 'move_to':
+            # move_to x y (absolute)
+            x = int(args[0])
+            y = int(args[1])
+            send_mouse_move_absolute(x, y)
 
         elif name == 'sleep':
             # sleep duration [max_variation]

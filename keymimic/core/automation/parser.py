@@ -159,7 +159,8 @@ def validate_commands(commands):
         'release': (1, 1),     # release key
         'click': (0, 0),       # click
         'right_click': (0, 0), # right_click
-        'move': (2, 2),        # move dx dy
+        'move': (2, 2),        # move dx dy (relative)
+        'move_to': (2, 2),     # move_to x y (absolute)
         'sleep': (1, 2),       # sleep duration [variation]
         'log': (1, 1),         # log message
         'wait_with_keys': (1, None),  # wait_with_keys key1 key2 ...

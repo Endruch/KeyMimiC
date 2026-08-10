@@ -51,7 +51,13 @@ class ProfileManager:
             raw = self._raw.get(name)
         if raw is None:
             return Script.empty(name)
-        return Script.from_dict(raw)
+        try:
+            return Script.from_dict(raw)
+        except (AttributeError, TypeError, KeyError) as exc:
+            # A malformed or foreign-format entry shouldn't crash the whole
+            # app on startup - fall back to an empty script and keep going.
+            print(f"Error loading profile '{name}' for thread {self.thread_id}: {exc}")
+            return Script.empty(name)
 
     def add_profile(self, name: str, script: Script):
         with self._lock:

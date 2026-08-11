@@ -1,7 +1,12 @@
 """
-Widgets for the block editor: a draggable list of block "cards", each card
-rendering its own kind (plain block / repeat / mouse path), and a draggable
-list of step rows inside a plain block's card.
+Widgets for the block editor: a draggable list of block "cards" for one
+track (keyboard or mouse), each card rendering its own kind (plain block /
+repeat / mouse path), and a draggable list of step rows inside a plain
+block's card.
+
+Stage 1 of the dual-track redesign keeps this purely a plain, per-track list
+- no proportional-height/overlapping timeline rendering yet (that's Stage 2,
+tackled separately once this engine-level rework is confirmed working).
 
 Mutation strategy: every widget here mutates the live Script/Block/Step
 objects it was given directly (they're plain Python objects, passed by
@@ -13,15 +18,14 @@ whole class of stale-index/partial-update bugs.
 """
 
 from PySide6.QtCore import Qt, QMimeData, QSize
-from PySide6.QtGui import QDrag, QPainter, QPen, QColor
+from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
-    QFrame, QLabel, QPushButton, QSpinBox,
+    QFrame, QLabel, QPushButton, QSpinBox, QLineEdit,
     QPlainTextEdit, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QAbstractItemView, QColorDialog, QMessageBox, QWidget, QStackedWidget,
-    QSizePolicy,
 )
 
-from ..model import Block, Step
+from ..model import Block, Step, block_fits_track
 from . import styles
 from .action_picker import ActionPickerDialog
 from .mouse_path_editor import MousePathEditorDialog
@@ -29,7 +33,15 @@ from .mouse_path_editor import MousePathEditorDialog
 BLOCK_MIME = "application/x-keymimic-block"
 STEP_MIME = "application/x-keymimic-step"
 
-KIND_TITLES = {"block": "Block", "repeat": "Repeat", "mouse_path": "Mouse Path"}
+KIND_TITLES = {"repeat": "Repeat", "mouse_path": "Mouse Path"}
+
+# Timeline sizing (Stage 2): a block's card is stretched past its natural
+# content height in proportion to its duration, so longer actions read as
+# visually longer on the track. Capped so a multi-minute wait doesn't blow
+# the column up to an unusable height - the user scrolls past it instead.
+_PIXELS_PER_SECOND = 15
+_MAX_DURATION_EXTRA_PX = 260
+_MIN_VISIBLE_WAIT = 0.05  # shorter recorded gaps aren't worth their own segment
 
 
 def _collect_descendant_lists(block: Block):
@@ -57,106 +69,27 @@ class _CurrentPageStack(QStackedWidget):
         return current.minimumSizeHint() if current else super().minimumSizeHint()
 
 
-# ---------------------------------------------------------------------------
-# Timeline: keyboard blocks on the left of a vertical spine, mouse blocks on
-# the right, Repeat blocks spanning full width over the spine. Purely a
-# rendering concern - execution order is still the flat, top-to-bottom
-# blocks_ref list; this only changes which item widget goes into each row.
-# ---------------------------------------------------------------------------
-
-SPINE_WIDTH = 46
-_PIXELS_PER_SECOND = 15
-_MAX_DURATION_EXTRA_PX = 260
-
-
-class _SpineSegment(QWidget):
-    """One row's slice of the vertical timeline: line + tick + optional time label."""
-
-    def __init__(self, elapsed_before: float, show_label: bool, parent=None):
-        super().__init__(parent)
-        self.elapsed_before = elapsed_before
-        self.show_label = show_label
-        self.setFixedWidth(SPINE_WIDTH)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        center_x = SPINE_WIDTH // 2
-
-        pen = QPen(QColor(styles.SPINE_COLOR))
-        pen.setWidth(2)
-        painter.setPen(pen)
-        painter.drawLine(center_x, 0, center_x, self.height())
-
-        tick_pen = QPen(QColor(styles.SPINE_TICK_COLOR))
-        tick_pen.setWidth(2)
-        painter.setPen(tick_pen)
-        painter.drawLine(center_x - 5, 0, center_x + 5, 0)
-
-        if self.show_label:
-            painter.setPen(QColor(styles.SPINE_LABEL_COLOR))
-            font = painter.font()
-            font.setPointSize(8)
-            painter.setFont(font)
-            painter.drawText(0, 2, SPINE_WIDTH, 14, Qt.AlignHCenter, f"{self.elapsed_before:.1f}s")
-        painter.end()
-
-
-class TimelineRowWidget(QWidget):
+class _WaitSegment(QWidget):
     """
-    One row of the block timeline: a BlockCardWidget placed left (keyboard),
-    right (mouse), or full-width over the spine (Repeat), plus that row's
-    slice of the vertical spine line. Card height is topped up to roughly
-    reflect the block's estimated duration (with a floor at its natural
-    content height, so short actions stay readable).
+    Non-interactive filler shown on the timeline between two blocks to
+    represent an explicit recorded pause (see Block.leading_wait()), sized
+    proportionally like a real block. Purely a rendering artifact - it has
+    no id, isn't part of blocks_ref, and can't be selected/dragged/edited;
+    the underlying sleep step/point still lives inside the block that
+    follows it.
     """
 
-    def __init__(self, block: Block, owner_list, panel, elapsed_before: float,
-                 show_label: bool, parent=None):
+    def __init__(self, duration: float, parent=None):
         super().__init__(parent)
-        self.card = BlockCardWidget(block, owner_list, panel)
-        natural_height = max(self.card.sizeHint().height(), 28)
-
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 3, 0, 3)
-        outer.setSpacing(0)
-
-        if block.column == "center":
-            outer.addWidget(self.card, stretch=1)
-            self._target_height = natural_height
-            self.setMinimumHeight(self._target_height)
-            return
-
-        extra = min(block.estimated_duration() * _PIXELS_PER_SECOND, _MAX_DURATION_EXTRA_PX)
-        self._target_height = int(natural_height + extra)
-        self.setMinimumHeight(self._target_height)
-
-        spine = _SpineSegment(elapsed_before, show_label)
-
-        left_slot = QWidget()
-        left_layout = QHBoxLayout(left_slot)
-        left_layout.setContentsMargins(0, 0, 6, 0)
-        left_layout.setAlignment(Qt.AlignTop | Qt.AlignRight)
-
-        right_slot = QWidget()
-        right_layout = QHBoxLayout(right_slot)
-        right_layout.setContentsMargins(6, 0, 0, 0)
-        right_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-
-        if block.column == "keyboard":
-            left_layout.addWidget(self.card)
-        else:
-            right_layout.addWidget(self.card)
-
-        outer.addWidget(left_slot, stretch=1)
-        outer.addWidget(spine)
-        outer.addWidget(right_slot, stretch=1)
-
-    def sizeHint(self):
-        hint = super().sizeHint()
-        return QSize(hint.width(), max(hint.height(), self._target_height))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        label = QLabel(f"Sleep {duration:.2f}s")
+        label.setStyleSheet(f"color: {styles.TEXT_MUTED}; font-style: italic;")
+        layout.addWidget(label)
+        layout.addStretch()
+        self.setStyleSheet(
+            f"background: transparent; border: 1px dashed {styles.BORDER}; border-radius: 4px;"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +230,57 @@ class StepListWidget(QListWidget):
 
 
 # ---------------------------------------------------------------------------
+# Click-to-edit block label
+# ---------------------------------------------------------------------------
+
+class _EditableSummary(QWidget):
+    """
+    Shows Block.display_label() (the user's own note, or else the
+    auto-summary). Clicking it swaps in a QLineEdit; typing a value and
+    confirming sets Block.label as a permanent override, clearing it
+    reverts to the auto-summary.
+    """
+
+    def __init__(self, block: Block, panel, parent=None):
+        super().__init__(parent)
+        self.block = block
+        self.panel = panel
+        self._saving = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.label = QLabel(block.display_label())
+        self.label.setObjectName("MutedLabel")
+        self.label.setStyleSheet(f"color: {styles.TEXT_MUTED};")
+        self.label.setCursor(Qt.IBeamCursor)
+        self.label.setToolTip("Click to set a custom label (clear it to use the auto-summary)")
+        self.label.mousePressEvent = self._on_label_clicked
+        layout.addWidget(self.label, stretch=1)
+
+        self.editor = QLineEdit()
+        self.editor.setVisible(False)
+        self.editor.editingFinished.connect(self._on_edit_finished)
+        layout.addWidget(self.editor, stretch=1)
+
+    def _on_label_clicked(self, event):
+        if self.panel.is_locked():
+            return
+        self.editor.setText(self.block.label)
+        self.label.setVisible(False)
+        self.editor.setVisible(True)
+        self.editor.setFocus()
+        self.editor.selectAll()
+
+    def _on_edit_finished(self):
+        if self._saving:
+            return
+        self._saving = True
+        self.block.label = self.editor.text().strip()
+        self.panel.notify_change()
+
+
+# ---------------------------------------------------------------------------
 # Block cards
 # ---------------------------------------------------------------------------
 
@@ -306,7 +290,7 @@ class BlockCardWidget(QFrame):
     def __init__(self, block: Block, owner_list, panel, parent=None):
         super().__init__(parent)
         self.block = block
-        self.owner_list = owner_list  # BlockListWidget this card lives in (for drag)
+        self.owner_list = owner_list  # BlockListWidget this card lives in (for drag/track)
         self.panel = panel
         self.setObjectName("BlockCard")
         self._selected = False
@@ -361,20 +345,13 @@ class BlockCardWidget(QFrame):
         self.color_btn.clicked.connect(self._on_pick_color)
         row.addWidget(self.color_btn)
 
-        auto_color_btn = QPushButton("A")
-        auto_color_btn.setFixedSize(15, 15)
-        auto_color_btn.setToolTip("Reset to automatic color")
-        auto_color_btn.clicked.connect(self._on_auto_color)
-        row.addWidget(auto_color_btn)
+        title = KIND_TITLES.get(self.block.kind)
+        if title:
+            self.title_label = QLabel(f"<b>{title}</b>")
+            row.addWidget(self.title_label)
 
-        title = KIND_TITLES.get(self.block.kind, "Block")
-        self.title_label = QLabel(f"<b>{title}</b>")
-        row.addWidget(self.title_label)
-
-        self.summary_label = QLabel(self.block.summary())
-        self.summary_label.setObjectName("MutedLabel")
-        self.summary_label.setStyleSheet(f"color: {styles.TEXT_MUTED};")
-        row.addWidget(self.summary_label, stretch=1)
+        self.summary_widget = _EditableSummary(self.block, self.panel)
+        row.addWidget(self.summary_widget, stretch=1)
 
         dup_btn = QPushButton("Duplicate")
         dup_btn.clicked.connect(self._on_duplicate)
@@ -387,8 +364,7 @@ class BlockCardWidget(QFrame):
         delete_btn.clicked.connect(self._on_delete)
         row.addWidget(delete_btn)
 
-        for w in (self.enabled_btn, self.collapse_btn, self.color_btn, auto_color_btn,
-                  dup_btn, delete_btn):
+        for w in (self.enabled_btn, self.collapse_btn, self.color_btn, dup_btn, delete_btn):
             w.setEnabled(not self.panel.is_locked())
 
         return row
@@ -410,10 +386,6 @@ class BlockCardWidget(QFrame):
         if color.isValid():
             self.block.color = color.name()
             self.panel.notify_change()
-
-    def _on_auto_color(self):
-        self.block.color = None
-        self.panel.notify_change()
 
     def _on_duplicate(self):
         clone = self.block.clone()
@@ -504,17 +476,7 @@ class BlockCardWidget(QFrame):
         self.body_stack.addWidget(text_page)
 
     def _on_add_step(self):
-        # An empty block hasn't picked a side yet - any type is fine for its
-        # first step. Once it has content, further steps must match its
-        # column so a block never ends up mixing keyboard and mouse actions.
-        if self.block.steps:
-            allowed = {
-                "keyboard": ("keyboard", "sleep", "log", "wait_with_keys"),
-                "mouse": ("mouse", "sleep", "log"),
-            }.get(self.block.column)
-        else:
-            allowed = None
-        dlg = ActionPickerDialog(self.window(), allowed_types=allowed)
+        dlg = ActionPickerDialog(self.window())
         if dlg.exec() and dlg.result_step is not None:
             self.block.steps.append(dlg.result_step)
             self.panel.notify_change()
@@ -552,7 +514,7 @@ class BlockCardWidget(QFrame):
         count_row.addStretch()
         self.body_layout.addLayout(count_row)
 
-        nested = BlockListPanel(self.block.children, self.panel)
+        nested = BlockListPanel(self.block.children, self.panel, self.owner_list.track)
         self.body_layout.addWidget(nested)
 
     def _on_count_changed(self):
@@ -609,16 +571,17 @@ class BlockCardWidget(QFrame):
 
 
 # ---------------------------------------------------------------------------
-# Block list (top-level, or one repeat's children)
+# Block list (top-level of one track, or one repeat's children)
 # ---------------------------------------------------------------------------
 
 class BlockListWidget(QListWidget):
-    """Draggable, multi-selectable list of block cards for one list of Blocks."""
+    """Draggable, multi-selectable list of block cards for one track's list of Blocks."""
 
-    def __init__(self, blocks_ref: list, panel, parent=None):
+    def __init__(self, blocks_ref: list, panel, track: str, parent=None):
         super().__init__(parent)
         self.blocks_ref = blocks_ref
         self.panel = panel
+        self.track = track  # "keyboard" or "mouse" - which track this list belongs to
         self.setFrameShape(QFrame.NoFrame)
         self.setAcceptDrops(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -634,25 +597,47 @@ class BlockListWidget(QListWidget):
 
     def _render(self):
         self.clear()
-        elapsed = 0.0
-        for i, block in enumerate(self.blocks_ref):
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, block.id)
-            show_label = (i % 4 == 0)
-            row = TimelineRowWidget(block, self, self.panel, elapsed, show_label)
-            item.setSizeHint(row.sizeHint())
-            self.addItem(item)
-            self.setItemWidget(item, row)
-            elapsed += block.estimated_duration()
+        for block in self.blocks_ref:
+            wait = block.leading_wait()
+            if wait > _MIN_VISIBLE_WAIT:
+                self._add_wait_item(block, wait)
+            self._add_block_item(block)
         total_height = sum(self.sizeHintForRow(i) for i in range(self.count())) + 8
         self.setMinimumHeight(min(total_height, 4000))
+
+    def _add_wait_item(self, block: Block, duration: float):
+        # Tagged with the block it precedes (same id, but non-selectable) so
+        # dropping on it resolves to "insert right before that block" - see
+        # _resolve_blocks_index.
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, block.id)
+        item.setFlags(Qt.NoItemFlags)
+        widget = _WaitSegment(duration)
+        extra = min(duration * _PIXELS_PER_SECOND, _MAX_DURATION_EXTRA_PX)
+        item.setSizeHint(QSize(0, max(22, int(extra))))
+        self.addItem(item)
+        self.setItemWidget(item, widget)
+
+    def _add_block_item(self, block: Block):
+        item = QListWidgetItem()
+        item.setData(Qt.UserRole, block.id)
+        card = BlockCardWidget(block, self, self.panel)
+        natural = card.sizeHint()
+        # A collapsed block should read as compact on the timeline too - the
+        # duration-based padding only makes sense while its content is shown.
+        extra = 0.0 if block.collapsed else min(
+            block.active_duration() * _PIXELS_PER_SECOND, _MAX_DURATION_EXTRA_PX
+        )
+        item.setSizeHint(QSize(natural.width(), int(max(natural.height(), 28) + extra)))
+        self.addItem(item)
+        self.setItemWidget(item, card)
 
     def _sync_selection_visuals(self):
         for i in range(self.count()):
             item = self.item(i)
-            row = self.itemWidget(item)
-            if row:
-                row.card.set_selected(item.isSelected())
+            card = self.itemWidget(item)
+            if isinstance(card, BlockCardWidget):
+                card.set_selected(item.isSelected())
 
     def selected_block_ids(self):
         return [self.item(i).data(Qt.UserRole) for i in range(self.count()) if self.item(i).isSelected()]
@@ -661,10 +646,26 @@ class BlockListWidget(QListWidget):
         """Re-measure the item hosting `card` (its content size changed in place)."""
         for i in range(self.count()):
             item = self.item(i)
-            row = self.itemWidget(item)
-            if row and row.card is card:
-                item.setSizeHint(row.sizeHint())
+            widget = self.itemWidget(item)
+            if widget is card:
+                item.setSizeHint(widget.sizeHint())
                 break
+
+    def _resolve_blocks_index(self, item):
+        """
+        Map a dropped-on QListWidgetItem to a blocks_ref index: the item may
+        be a real block's row, or the "Sleep" ghost row immediately ahead of
+        one (see _add_wait_item) - both carry that block's id and resolve to
+        its current position. None (dropped past the last row) resolves to
+        the end of the list.
+        """
+        if item is None:
+            return len(self.blocks_ref)
+        block_id = item.data(Qt.UserRole)
+        for i, b in enumerate(self.blocks_ref):
+            if b.id == block_id:
+                return i
+        return len(self.blocks_ref)
 
     def peek_block(self, block_id):
         """Find a block by id without removing it."""
@@ -681,7 +682,9 @@ class BlockListWidget(QListWidget):
     #
     # Blocks can be dropped into ANY BlockListWidget - the same list (reorder),
     # a different nesting level within the same panel (e.g. root <-> inside a
-    # Repeat), or a list belonging to a completely different open ThreadPanel.
+    # Repeat), or a list belonging to a completely different open ThreadPanel -
+    # as long as the dragged block (and everything nested inside it) is
+    # compatible with the target list's track (see model.block_fits_track).
     # The dragged block's identity is carried via a direct object reference to
     # its source BlockListWidget (QMimeData.setProperty), which only works for
     # in-process drags - fine here, dragging out of the app isn't a thing.
@@ -733,6 +736,10 @@ class BlockListWidget(QListWidget):
         if dragged is None:
             event.ignore()
             return
+        if not block_fits_track(dragged, self.track):
+            # E.g. dragging a keyboard-only block onto the mouse track's list.
+            event.ignore()
+            return
         if any(lst is self.blocks_ref for lst in _collect_descendant_lists(dragged)):
             # Can't drop a Repeat block inside its own (possibly nested) children.
             event.ignore()
@@ -744,7 +751,7 @@ class BlockListWidget(QListWidget):
             return
 
         target_item = self.itemAt(event.position().toPoint())
-        new_index = self.row(target_item) if target_item else len(self.blocks_ref)
+        new_index = self._resolve_blocks_index(target_item)
         new_index = max(0, min(new_index, len(self.blocks_ref)))
         self.blocks_ref.insert(new_index, block)
         event.acceptProposedAction()
@@ -760,7 +767,7 @@ class BlockListWidget(QListWidget):
             return
 
         target_item = self.itemAt(event.position().toPoint())
-        raw_index = self.row(target_item) if target_item else len(self.blocks_ref) - 1
+        raw_index = self._resolve_blocks_index(target_item)
         raw_index = max(0, min(raw_index, len(self.blocks_ref) - 1))
         # Removing old_index first shifts everything after it down by one, so the
         # drop target's effective index must be adjusted when dragging downward.
@@ -774,22 +781,23 @@ class BlockListWidget(QListWidget):
 
 
 class BlockListPanel(QWidget):
-    """A BlockListWidget plus its own trailing '+ Add Block' button."""
+    """A BlockListWidget plus its own trailing '+ Add ...' buttons."""
 
-    def __init__(self, blocks_ref: list, panel, parent=None):
+    def __init__(self, blocks_ref: list, panel, track: str, parent=None):
         super().__init__(parent)
         self.blocks_ref = blocks_ref
         self.panel = panel
+        self.track = track
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self.list_widget = BlockListWidget(blocks_ref, panel, self)
+        self.list_widget = BlockListWidget(blocks_ref, panel, track, self)
         layout.addWidget(self.list_widget)
 
         add_row = QHBoxLayout()
-        self.add_btn = QPushButton("+ Add Block")
+        self.add_btn = QPushButton("+ Add Block" if track == "keyboard" else "+ Add Mouse Path")
         self.add_btn.setObjectName("PrimaryButton")
         self.add_btn.clicked.connect(self._on_add_block)
         self.add_btn.setEnabled(not panel.is_locked())
@@ -803,6 +811,10 @@ class BlockListPanel(QWidget):
         layout.addLayout(add_row)
 
     def _on_add_block(self):
+        if self.track == "mouse":
+            self.blocks_ref.append(Block.new_mouse_path([]))
+            self.panel.notify_change()
+            return
         dlg = ActionPickerDialog(self.window())
         if dlg.exec() and dlg.result_step is not None:
             self.blocks_ref.append(Block.new_block([dlg.result_step]))

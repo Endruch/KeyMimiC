@@ -1,23 +1,35 @@
 """
-The macro editor: profile selector, block editor, run controls and log for
-the single thread the app runs (see MainWindow).
+The macro editor: profile selector, two-track (keyboard/mouse) block editor,
+run controls and log for the single thread the app runs (see MainWindow).
+
+Both tracks run on their own ScriptExecutor thread, started together and
+(when looping) resynchronized at the top of every pass via a shared
+threading.Barrier(2) - see start()/ScriptExecutor. There is no visible
+"unsaved changes" indicator; the existing save/discard/cancel prompt (see
+_confirm_discard_if_dirty) already covers that case whenever it matters.
 """
 
+import threading
 from datetime import datetime
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QCheckBox, QSpinBox, QScrollArea, QPlainTextEdit, QMessageBox,
-    QInputDialog,
+    QInputDialog, QWidget,
 )
 
 from ..model import Script, Block, validate_script, ScriptValidationError
 from ..managers import ProfileManager, Recorder
 from ..execution import ScriptExecutor
 from ..core.constants import IS_WINDOWS
+from ..core.input import get_mouse_position
 from .block_widgets import BlockListPanel, BlockListWidget
 from .settings_dialog import SettingsDialog
+
+LOG_MAX_LINES = 300
+MOUSE_POS_POLL_MS = 100
 
 
 class ThreadPanel(QFrame):
@@ -29,7 +41,6 @@ class ThreadPanel(QFrame):
         self.panel_id = panel_id
         self.hotkey_config = hotkey_config
         self.on_hotkeys_changed = on_hotkeys_changed
-        self.clipboard = []
 
         self.profile_manager = ProfileManager(panel_id)
         self.current_profile = self.profile_manager.get_profile_names()[0]
@@ -40,15 +51,20 @@ class ThreadPanel(QFrame):
         self._dirty = False
 
         self.block_widgets = {}      # block id -> BlockCardWidget, refreshed on every render
-        self.current_block_id = None
+        self.current_block_ids = set()
         self.running = False
-        self.executor = None
+        self.keyboard_executor = None
+        self.mouse_executor = None
+        self._stopped_count = 0
         self.recorder = None
         self.is_recording = False
 
         self._build_ui()
         self._refresh_blocks_area()
-        self._update_unsaved_indicator()
+
+        self._mouse_pos_timer = QTimer(self)
+        self._mouse_pos_timer.timeout.connect(self._update_mouse_pos_label)
+        self._mouse_pos_timer.start(MOUSE_POS_POLL_MS)
 
     # -- panel interface used by block_widgets.py --------------------------
 
@@ -56,7 +72,7 @@ class ThreadPanel(QFrame):
         return self.running or self.is_recording
 
     def is_current_block(self, block_id) -> bool:
-        return block_id == self.current_block_id
+        return block_id in self.current_block_ids
 
     def notify_change(self):
         """Called by child widgets right after they mutated self.script in place."""
@@ -64,7 +80,6 @@ class ThreadPanel(QFrame):
         self._undo_stack.append(self.script.to_dict())
         self._undo_index += 1
         self._dirty = True
-        self._update_unsaved_indicator()
         self._update_undo_redo_buttons()
         self._update_start_button()
         QTimer.singleShot(0, self._refresh_blocks_area)
@@ -74,13 +89,6 @@ class ThreadPanel(QFrame):
     def _build_ui(self):
         self.setMinimumWidth(380)
         root = QVBoxLayout(self)
-
-        header = QHBoxLayout()
-        self.unsaved_label = QLabel("")
-        self.unsaved_label.setObjectName("UnsavedIndicator")
-        header.addWidget(self.unsaved_label)
-        header.addStretch()
-        root.addLayout(header)
 
         profile_row = QHBoxLayout()
         profile_row.addWidget(QLabel("Profile:"))
@@ -143,14 +151,8 @@ class ThreadPanel(QFrame):
         root.addLayout(toolbar2)
 
         toolbar3 = QHBoxLayout()
-        toolbar3.addWidget(QLabel("Selected:"))
         self._bulk_buttons = []
         for text, handler in (
-            ("Enable", self._on_bulk_enable),
-            ("Disable", self._on_bulk_disable),
-            ("Delete", self._on_bulk_delete),
-            ("Copy", self._on_copy),
-            ("Paste", self._on_paste),
             ("Merge", self._on_merge),
             ("Split", self._on_split),
         ):
@@ -186,6 +188,13 @@ class ThreadPanel(QFrame):
         self.log_box.setFixedHeight(120)
         root.addWidget(self.log_box)
 
+        footer = QHBoxLayout()
+        self.mouse_pos_label = QLabel("Mouse: -, -")
+        self.mouse_pos_label.setObjectName("MutedLabel")
+        footer.addWidget(self.mouse_pos_label)
+        footer.addStretch()
+        root.addLayout(footer)
+
         self._update_hotkey_labels()
         self._update_undo_redo_buttons()
         self._update_start_button()
@@ -207,14 +216,36 @@ class ThreadPanel(QFrame):
 
     def _refresh_blocks_area(self):
         self.block_widgets.clear()
-        panel_widget = BlockListPanel(self.script.blocks, self)
-        self.scroll_area.setWidget(panel_widget)
+
+        container = QWidget()
+        columns = QHBoxLayout(container)
+        columns.setContentsMargins(0, 0, 0, 0)
+        columns.setSpacing(10)
+
+        for title, blocks_ref, track in (
+            ("Keyboard", self.script.keyboard_blocks, "keyboard"),
+            ("Mouse", self.script.mouse_blocks, "mouse"),
+        ):
+            col = QVBoxLayout()
+            col.addWidget(QLabel(f"<b>{title}</b>"))
+            col.addWidget(BlockListPanel(blocks_ref, self, track))
+            col_widget = QWidget()
+            col_widget.setLayout(col)
+            columns.addWidget(col_widget, stretch=1)
+
+        self.scroll_area.setWidget(container)
         self.loop_check.blockSignals(True)
         self.loop_check.setChecked(self.script.loop)
         self.loop_check.blockSignals(False)
         self.humanize_spin.blockSignals(True)
         self.humanize_spin.setValue(self.script.humanize)
         self.humanize_spin.blockSignals(False)
+
+    # -- mouse position footer -------------------------------------------------
+
+    def _update_mouse_pos_label(self):
+        x, y = get_mouse_position()
+        self.mouse_pos_label.setText(f"Mouse: {x}, {y}")
 
     # -- undo / redo ----------------------------------------------------------
 
@@ -228,7 +259,6 @@ class ThreadPanel(QFrame):
         self._undo_index -= 1
         self.script = Script.from_dict(self._undo_stack[self._undo_index])
         self._dirty = True
-        self._update_unsaved_indicator()
         self._update_undo_redo_buttons()
         self._update_start_button()
         self._refresh_blocks_area()
@@ -239,15 +269,11 @@ class ThreadPanel(QFrame):
         self._undo_index += 1
         self.script = Script.from_dict(self._undo_stack[self._undo_index])
         self._dirty = True
-        self._update_unsaved_indicator()
         self._update_undo_redo_buttons()
         self._update_start_button()
         self._refresh_blocks_area()
 
     # -- dirty / save state ----------------------------------------------------
-
-    def _update_unsaved_indicator(self):
-        self.unsaved_label.setText("* unsaved" if self._dirty else "")
 
     def _update_start_button(self):
         try:
@@ -261,7 +287,6 @@ class ThreadPanel(QFrame):
     def _on_save(self):
         self.profile_manager.update_profile(self.current_profile, self.script)
         self._dirty = False
-        self._update_unsaved_indicator()
         self._log(f"Saved profile '{self.current_profile}'")
 
     def _confirm_discard_if_dirty(self) -> bool:
@@ -301,8 +326,7 @@ class ThreadPanel(QFrame):
         self._undo_stack = [self.script.to_dict()]
         self._undo_index = 0
         self._dirty = False
-        self.current_block_id = None
-        self._update_unsaved_indicator()
+        self.current_block_ids = set()
         self._update_undo_redo_buttons()
         self._update_start_button()
         self._refresh_blocks_area()
@@ -420,12 +444,12 @@ class ThreadPanel(QFrame):
         self.is_recording = False
         self._update_hotkey_labels()
         self._update_lock_state()
-        blocks = self.recorder.stop()
+        keyboard_blocks, mouse_blocks = self.recorder.stop()
         self.recorder = None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"Recording {timestamp}"
-        new_script = Script(thread_name=name, blocks=blocks)
+        new_script = Script(thread_name=name, keyboard_blocks=keyboard_blocks, mouse_blocks=mouse_blocks)
         self.profile_manager.add_profile(name, new_script)
 
         self.profile_combo.blockSignals(True)
@@ -454,7 +478,7 @@ class ThreadPanel(QFrame):
     # -- run / stop -------------------------------------------------------
 
     def start(self):
-        if self.running or (self.executor and self.executor.is_alive()):
+        if self.running:
             return
         try:
             validate_script(self.script)
@@ -463,30 +487,46 @@ class ThreadPanel(QFrame):
             return
 
         self.running = True
-        self.current_block_id = None
+        self.current_block_ids = set()
+        self._stopped_count = 0
         self._refresh_blocks_area()
         self._update_undo_redo_buttons()
         self._update_lock_state()
 
         label = self.script.thread_name or f"Thread {self.panel_id}"
-        self.executor = ScriptExecutor(self.script, label=label)
-        self.executor.signals.log.connect(self._log)
-        self.executor.signals.block_started.connect(self._on_block_started)
-        self.executor.signals.block_finished.connect(self._on_block_finished)
-        self.executor.signals.stopped.connect(self._on_executor_stopped)
-        self.executor.start()
+        # Both tracks are always started together; when looping, they share a
+        # barrier so neither one starts its next pass before the other has
+        # finished its current one - otherwise the two tracks would slowly
+        # drift apart over long/looped runs.
+        barrier = threading.Barrier(2) if self.script.loop else None
+        self.keyboard_executor = ScriptExecutor(
+            self.script.keyboard_blocks, humanize=self.script.humanize, loop=self.script.loop,
+            label=f"{label} [Keyboard]", sync_barrier=barrier,
+        )
+        self.mouse_executor = ScriptExecutor(
+            self.script.mouse_blocks, humanize=self.script.humanize, loop=self.script.loop,
+            label=f"{label} [Mouse]", sync_barrier=barrier,
+        )
+        for executor in (self.keyboard_executor, self.mouse_executor):
+            executor.signals.log.connect(self._log)
+            executor.signals.block_started.connect(self._on_block_started)
+            executor.signals.block_finished.connect(self._on_block_finished)
+            executor.signals.stopped.connect(self._on_executor_stopped)
+            executor.start()
 
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Running...")
 
     def stop(self):
-        if self.executor:
-            self.executor.stop()
+        if self.keyboard_executor:
+            self.keyboard_executor.stop()
+        if self.mouse_executor:
+            self.mouse_executor.stop()
         self.stop_btn.setEnabled(False)
 
     def _on_block_started(self, block_id):
-        self.current_block_id = block_id
+        self.current_block_ids.add(block_id)
         widget = self.block_widgets.get(block_id)
         if widget:
             widget.set_current(True)
@@ -495,13 +535,17 @@ class ThreadPanel(QFrame):
         widget = self.block_widgets.get(block_id)
         if widget:
             widget.set_current(False)
-        if self.current_block_id == block_id:
-            self.current_block_id = None
+        self.current_block_ids.discard(block_id)
 
     def _on_executor_stopped(self):
+        # Emitted once per track's executor - only finalize once both are done.
+        self._stopped_count += 1
+        if self._stopped_count < 2:
+            return
         self.running = False
-        self.executor = None
-        self.current_block_id = None
+        self.keyboard_executor = None
+        self.mouse_executor = None
+        self.current_block_ids = set()
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.status_label.setText("Stopped")
@@ -515,83 +559,25 @@ class ThreadPanel(QFrame):
     def _log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_box.appendPlainText(f"[{timestamp}] {message}")
+        doc = self.log_box.document()
+        excess = doc.blockCount() - LOG_MAX_LINES
+        if excess > 0:
+            cursor = self.log_box.textCursor()
+            cursor.movePosition(QTextCursor.Start)
+            cursor.movePosition(QTextCursor.Down, QTextCursor.KeepAnchor, excess)
+            cursor.removeSelectedText()
+            cursor.deleteChar()  # remove the now-empty line left at the top
 
-    # -- selection helpers (multi-select bulk actions) -----------------------
+    # -- selection helpers (multi-block actions) ------------------------------
 
     def _all_list_widgets(self):
         return self.findChildren(BlockListWidget)
-
-    def _selected_ids_everywhere(self):
-        ids = []
-        for lw in self._all_list_widgets():
-            ids.extend(lw.selected_block_ids())
-        return ids
-
-    def _find_block_and_container(self, block_id, blocks=None):
-        """Recursively find (block, container_list, index) for a block id."""
-        blocks = self.script.blocks if blocks is None else blocks
-        for i, b in enumerate(blocks):
-            if b.id == block_id:
-                return b, blocks, i
-            if b.kind == "repeat":
-                found = self._find_block_and_container(block_id, b.children)
-                if found:
-                    return found
-        return None
-
-    def _on_bulk_enable(self):
-        self._bulk_set_enabled(True)
-
-    def _on_bulk_disable(self):
-        self._bulk_set_enabled(False)
-
-    def _bulk_set_enabled(self, enabled):
-        ids = self._selected_ids_everywhere()
-        if not ids:
-            return
-        for block_id in ids:
-            found = self._find_block_and_container(block_id)
-            if found:
-                found[0].enabled = enabled
-        self.notify_change()
-
-    def _on_bulk_delete(self):
-        ids = self._selected_ids_everywhere()
-        if not ids:
-            return
-        if QMessageBox.question(self, "Delete blocks", f"Delete {len(ids)} block(s)?") != QMessageBox.Yes:
-            return
-        for block_id in set(ids):
-            found = self._find_block_and_container(block_id)
-            if found:
-                _, container, index = found
-                del container[index]
-        self.notify_change()
 
     def _active_list_widget(self):
         for lw in self._all_list_widgets():
             if lw.selected_block_ids():
                 return lw
         return None
-
-    def _on_copy(self):
-        lw = self._active_list_widget()
-        if not lw:
-            return
-        ids = set(lw.selected_block_ids())
-        # In-place mutation (not rebinding self.clipboard) - this list object is
-        # shared with every other open ThreadPanel, so Paste there sees it too.
-        self.clipboard[:] = [b.clone() for b in lw.blocks_ref if b.id in ids]
-        self._log(f"Copied {len(self.clipboard)} block(s)")
-
-    def _on_paste(self):
-        if not self.clipboard:
-            return
-        lw = self._active_list_widget()
-        target = lw.blocks_ref if lw is not None else self.script.blocks
-        for b in self.clipboard:
-            target.append(b.clone())
-        self.notify_change()
 
     def _on_merge(self):
         lw = self._active_list_widget()

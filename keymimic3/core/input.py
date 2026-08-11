@@ -7,7 +7,6 @@ executor, GUI) can be imported and exercised on any OS.
 """
 
 import ctypes
-import time
 
 from .constants import IS_WINDOWS
 
@@ -87,14 +86,6 @@ def send_key_up(scan_code, extended=False):
     return _send_input(_Input(INPUT_KEYBOARD, _InputUnion(ki=ki)))
 
 
-def send_mouse_move(dx, dy):
-    """Move the mouse by a relative offset. Returns events sent (0/1)."""
-    if not IS_WINDOWS:
-        return 0
-    mi = _MouseInput(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, _extra_info())
-    return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
-
-
 def send_mouse_move_absolute(x, y):
     """Move the mouse to an absolute screen position. Returns events sent (0/1)."""
     if not IS_WINDOWS:
@@ -107,24 +98,22 @@ def send_mouse_move_absolute(x, y):
     return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
 
 
-def send_mouse_click(button="left", down_up_delay=0.03):
-    """Perform a mouse click (down, short delay, up). Returns (down_result, up_result)."""
+def send_mouse_button_down(button="left"):
+    """Press (and hold) a mouse button at the current cursor position. Returns events sent (0/1)."""
     if not IS_WINDOWS:
-        return (0, 0)
-    if button == "right":
-        down_flag, up_flag = MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP
-    else:
-        down_flag, up_flag = MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP
+        return 0
+    flag = MOUSEEVENTF_RIGHTDOWN if button == "right" else MOUSEEVENTF_LEFTDOWN
+    mi = _MouseInput(0, 0, 0, flag, 0, _extra_info())
+    return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
 
-    mi_down = _MouseInput(0, 0, 0, down_flag, 0, _extra_info())
-    down_result = _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi_down)))
 
-    time.sleep(down_up_delay)
-
-    mi_up = _MouseInput(0, 0, 0, up_flag, 0, _extra_info())
-    up_result = _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi_up)))
-
-    return (down_result, up_result)
+def send_mouse_button_up(button="left"):
+    """Release a mouse button. Returns events sent (0/1)."""
+    if not IS_WINDOWS:
+        return 0
+    flag = MOUSEEVENTF_RIGHTUP if button == "right" else MOUSEEVENTF_LEFTUP
+    mi = _MouseInput(0, 0, 0, flag, 0, _extra_info())
+    return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
 
 
 def get_mouse_position():

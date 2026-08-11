@@ -1,12 +1,19 @@
 """
-Executes a Script on a background thread.
+Executes one track (a flat list of Blocks) on a background thread.
 
-Blocks are executed strictly sequentially. A block's steps are also executed
-sequentially - holding two keys "at once" is expressed by ordering
-(press A, ..., press B, ..., release B, ..., release A), not by real
-parallel threads. Repeat blocks re-run their children N times. Stop
-immediately releases every currently-held key (checked every 50ms during any
-sleep, so it is effectively instant).
+A Script has two tracks - keyboard and mouse - each run by their own
+ScriptExecutor, both started together so real recorded timing keeps them in
+sync without any extra bookkeeping (see ThreadPanel.start()). Blocks within
+one track are still strictly sequential - holding two keys "at once" is
+expressed by ordering (press A, ..., press B, ..., release B, ..., release
+A), not by real parallel threads *within* a track. Repeat blocks re-run
+their children N times. Stop immediately releases every currently-held key
+(checked every 50ms during any sleep, so it is effectively instant).
+
+Looping: when `loop` is True, an executor runs one pass, emits
+`pass_finished`, and - if given a shared `sync_barrier` - waits there for
+the *other* track's executor to also finish its pass before starting the
+next one, so both tracks always restart together rather than drifting.
 """
 
 import random
@@ -18,13 +25,9 @@ from PySide6.QtCore import QObject, Signal
 from ..core.constants import SCAN_CODES
 from ..core.key_names import resolve_key
 from ..core.input import (
-    send_key_down,
-    send_key_up,
-    send_mouse_move,
-    send_mouse_move_absolute,
-    send_mouse_click,
+    send_key_down, send_key_up, send_mouse_move_absolute,
+    send_mouse_button_down, send_mouse_button_up,
 )
-from ..model import Script
 
 
 class ExecutorSignals(QObject):
@@ -33,16 +36,21 @@ class ExecutorSignals(QObject):
     block_started = Signal(str)   # block id
     block_finished = Signal(str)  # block id
     log = Signal(str)             # message
+    pass_finished = Signal()      # one full pass through the track's blocks completed
     stopped = Signal()            # emitted once, when the thread is fully done
 
 
 class ScriptExecutor(threading.Thread):
-    """Runs a Script in a background thread and reports progress via Qt signals."""
+    """Runs one track's blocks in a background thread, reporting via Qt signals."""
 
-    def __init__(self, script: Script, label: str = "Macro"):
+    def __init__(self, blocks, humanize: int = 0, loop: bool = True, label: str = "Macro",
+                 sync_barrier: threading.Barrier = None):
         super().__init__(daemon=True)
-        self.script = script
+        self.blocks = blocks
+        self.humanize = humanize
+        self.loop = loop
         self.label = label
+        self.sync_barrier = sync_barrier
         self.signals = ExecutorSignals()
 
         self._stop_event = threading.Event()
@@ -50,6 +58,11 @@ class ScriptExecutor(threading.Thread):
 
     def stop(self):
         self._stop_event.set()
+        if self.sync_barrier is not None:
+            try:
+                self.sync_barrier.abort()
+            except threading.BrokenBarrierError:
+                pass
 
     def _log(self, message: str):
         self.signals.log.emit(f"[{self.label}] {message}")
@@ -57,15 +70,23 @@ class ScriptExecutor(threading.Thread):
     # -- run loop -------------------------------------------------------------
 
     def run(self):
-        self._log("Macro started")
+        self._log("Started")
         try:
             while not self._stop_event.is_set():
-                self._run_blocks(self.script.blocks)
-                if not self.script.loop:
+                self._run_blocks(self.blocks)
+                if self._stop_event.is_set():
                     break
+                self.signals.pass_finished.emit()
+                if not self.loop:
+                    break
+                if self.sync_barrier is not None:
+                    try:
+                        self.sync_barrier.wait()
+                    except threading.BrokenBarrierError:
+                        break
         finally:
             self._release_all_held_keys()
-            self._log("Macro stopped")
+            self._log("Stopped")
             self.signals.stopped.emit()
 
     def _run_blocks(self, blocks):
@@ -106,12 +127,18 @@ class ScriptExecutor(threading.Thread):
                 self._sleep(point.dt)
                 if self._stop_event.is_set():
                     return
-            if point.kind == "click":
-                self._click("left")
-            elif point.kind == "right_click":
-                self._click("right")
+            if point.kind == "move":
+                send_mouse_move_absolute(point.x, point.y)
+            elif point.kind == "left_down":
+                self._mouse_down("left")
+            elif point.kind == "left_up":
+                self._mouse_up("left")
+            elif point.kind == "right_down":
+                self._mouse_down("right")
+            elif point.kind == "right_up":
+                self._mouse_up("right")
             else:
-                send_mouse_move(point.dx, point.dy)
+                self._log(f"Unknown mouse point kind: {point.kind}")
 
     # -- step execution ---------------------------------------------------
 
@@ -124,14 +151,6 @@ class ScriptExecutor(threading.Thread):
                 self._release(step.key)
         elif t == "release":
             self._release(step.key)
-        elif t == "click":
-            self._click("left")
-        elif t == "right_click":
-            self._click("right")
-        elif t == "move":
-            send_mouse_move(step.dx, step.dy)
-        elif t == "move_to":
-            send_mouse_move_absolute(step.x, step.y)
         elif t == "sleep":
             self._sleep(step.duration, max_variation=step.variation)
         elif t == "log":
@@ -141,13 +160,16 @@ class ScriptExecutor(threading.Thread):
         else:
             self._log(f"Unknown step type: {t}")
 
-    def _click(self, button):
-        down_result, up_result = send_mouse_click(button=button)
-        if down_result == 0 or up_result == 0:
+    def _mouse_down(self, button):
+        result = send_mouse_button_down(button)
+        if result == 0:
             self._log(
-                f"WARNING: SendInput blocked for {button} click - the target window may be "
+                f"WARNING: SendInput blocked for {button} mouse-down - the target window may be "
                 f"running with higher privileges (try running KeyMimic as Administrator)"
             )
+
+    def _mouse_up(self, button):
+        send_mouse_button_up(button)
 
     def _press(self, key):
         try:
@@ -177,7 +199,7 @@ class ScriptExecutor(threading.Thread):
     def _sleep(self, duration, max_variation=None):
         """Interruptible sleep with optional humanize jitter (checked every 50ms)."""
         duration = float(duration)
-        humanize = self.script.humanize or 0
+        humanize = self.humanize or 0
         if humanize > 0:
             variation = duration * (humanize / 100.0)
             if max_variation is not None:

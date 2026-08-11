@@ -1,16 +1,28 @@
 """
-Records keyboard and mouse input and turns it into a list of Blocks.
+Records keyboard and mouse input and turns it into two independent lists of
+Blocks - one per track (see model.Script). Each track keeps its own "time
+since the last event on this track" gap accounting, entirely independent of
+the other - a keyboard tap no longer interrupts an in-progress mouse
+gesture, and vice versa. Since both counters are driven by the same
+wall-clock and both start recording at the same instant, the two tracks
+stay correctly synchronized when played back together without needing any
+separate per-block timestamp.
 
-Design: every keyboard press/release becomes its own block - no automatic
-grouping of "simultaneous" key holds, the user merges related blocks
-manually afterwards with the editor's Merge tool. Mouse activity works
-differently: a run of moves *and clicks* is folded into a single
-"mouse_path" block as one continuous sequence of typed points (move / click
-/ right_click), so recording a gesture-with-clicks doesn't get fragmented
-into a move block, then a click block, then another move block, and so on.
-A keyboard action is still the one thing that closes out the current mouse
-block, since execution is strictly sequential - the keyboard event has to
-occupy its own position in the list at that point in time.
+Design:
+- Keyboard: every press/release becomes its own block - no automatic
+  grouping of "simultaneous" key holds, the user merges related blocks
+  manually afterwards with the editor's Merge tool.
+- Mouse: moves and button down/up events accumulate into a single
+  "mouse_path" block as one continuous sequence of typed points, so a
+  gesture-with-clicks doesn't fragment into a move block, then a click
+  block, then another move block. A new block only starts after a
+  significant pause in mouse activity (MOUSE_BLOCK_SPLIT_GAP), purely to
+  keep the block list organized into meaningful chunks.
+- Mouse buttons are recorded as separate down/up events with the real time
+  between them (not a fixed-duration "click"), and mouse positions are
+  recorded as absolute coordinates rather than relative deltas - Windows
+  applies pointer-acceleration curves to relative SendInput moves, which
+  made played-back movement drift from where it was recorded.
 """
 
 import ctypes
@@ -30,7 +42,9 @@ WM_SYSKEYUP = 0x0105
 
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
 WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
 
 VK_CONTROL = 0x11
 VK_SHIFT = 0x10
@@ -48,9 +62,10 @@ LLKHF_INJECTED_MASK = 0x10 | 0x20
 # LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED - the mouse equivalent.
 LLMHF_INJECTED_MASK = 0x01 | 0x02
 
-MOUSE_SAMPLE_INTERVAL = 0.02  # seconds between recorded mouse samples
-MOUSE_MOVE_THRESHOLD = 5      # minimum pixels to record a new sample
-MIN_RECORDED_GAP = 0.01       # ignore gaps smaller than this (event-loop noise)
+MOUSE_SAMPLE_INTERVAL = 0.02   # seconds between recorded mouse-move samples
+MOUSE_MOVE_THRESHOLD = 5       # minimum pixels moved to record a new sample
+MIN_RECORDED_GAP = 0.01        # ignore gaps smaller than this (event-loop noise)
+MOUSE_BLOCK_SPLIT_GAP = 1.0    # seconds of mouse inactivity that starts a new Mouse Path block
 
 
 class RecorderSignals(QObject):
@@ -65,8 +80,11 @@ class Recorder:
     def __init__(self, record_mouse: bool = False):
         self.record_mouse = record_mouse
         self.recording = False
-        self.events = []  # list of (name, args) tuples, chronological
-        self.last_time = None
+
+        self.keyboard_events = []  # list of (name, args) - "press"/"release"/"sleep"
+        self.mouse_events = []     # list of (name, args) - "move"/"*_down"/"*_up"/"sleep"
+        self._last_keyboard_time = None
+        self._last_mouse_event_time = None
 
         self.keyboard_hook = None
         self.mouse_hook = None
@@ -107,8 +125,10 @@ class Recorder:
             self.record_mouse = record_mouse
 
         self.recording = True
-        self.events = []
-        self.last_time = time.time()
+        self.keyboard_events = []
+        self.mouse_events = []
+        self._last_keyboard_time = time.time()
+        self._last_mouse_event_time = time.time()
         self._last_mouse_pos = None
         self._last_mouse_sample_time = None
         self.start_mouse_pos = get_mouse_position()
@@ -121,7 +141,7 @@ class Recorder:
             self.mouse_hook.start()
 
     def stop(self):
-        """Stop recording and return the recorded script as a list of Blocks."""
+        """Stop recording and return (keyboard_blocks, mouse_blocks)."""
         self.recording = False
 
         if self.keyboard_hook:
@@ -131,17 +151,9 @@ class Recorder:
             self.mouse_hook.stop()
             self.mouse_hook = None
 
-        return self._build_blocks()
+        return self._build_keyboard_blocks(), self._build_mouse_blocks()
 
     # -- hook callbacks -----------------------------------------------------
-
-    def _record_gap(self):
-        current_time = time.time()
-        if self.last_time:
-            gap = current_time - self.last_time
-            if gap > MIN_RECORDED_GAP:
-                self.events.append(("sleep", [round(gap, 3)]))
-        self.last_time = current_time
 
     def _on_keyboard_event(self, nCode, wParam, kb_struct):
         if not self.recording:
@@ -174,8 +186,22 @@ class Recorder:
                     self.signals.control_hotkey.emit(action)
                 return
 
-        self._record_gap()
-        self.events.append(("press" if is_down else "release", [code]))
+        now = time.time()
+        if self._last_keyboard_time is not None:
+            gap = now - self._last_keyboard_time
+            if gap > MIN_RECORDED_GAP:
+                self.keyboard_events.append(("sleep", [round(gap, 3)]))
+        self._last_keyboard_time = now
+
+        self.keyboard_events.append(("press" if is_down else "release", [code]))
+
+    def _record_mouse_gap(self):
+        now = time.time()
+        if self._last_mouse_event_time is not None:
+            gap = now - self._last_mouse_event_time
+            if gap > MIN_RECORDED_GAP:
+                self.mouse_events.append(("sleep", [round(gap, 3)]))
+        self._last_mouse_event_time = now
 
     def _on_mouse_event(self, nCode, wParam, mouse_struct):
         if not self.recording:
@@ -185,13 +211,20 @@ class Recorder:
         current_pos = (mouse_struct.pt.x, mouse_struct.pt.y)
 
         if wParam == WM_LBUTTONDOWN:
-            self._record_gap()
-            self.events.append(("click", []))
+            self._record_mouse_gap()
+            self.mouse_events.append(("left_down", []))
             return
-
+        if wParam == WM_LBUTTONUP:
+            self._record_mouse_gap()
+            self.mouse_events.append(("left_up", []))
+            return
         if wParam == WM_RBUTTONDOWN:
-            self._record_gap()
-            self.events.append(("right_click", []))
+            self._record_mouse_gap()
+            self.mouse_events.append(("right_down", []))
+            return
+        if wParam == WM_RBUTTONUP:
+            self._record_mouse_gap()
+            self.mouse_events.append(("right_up", []))
             return
 
         if wParam == WM_MOUSEMOVE:
@@ -204,8 +237,8 @@ class Recorder:
                 dx = current_pos[0] - self._last_mouse_pos[0]
                 dy = current_pos[1] - self._last_mouse_pos[1]
                 if (dx * dx + dy * dy) ** 0.5 >= MOUSE_MOVE_THRESHOLD:
-                    self._record_gap()
-                    self.events.append(("move", [dx, dy]))
+                    self._record_mouse_gap()
+                    self.mouse_events.append(("move", [current_pos[0], current_pos[1]]))
                     self._last_mouse_pos = current_pos
                     self._last_mouse_sample_time = now
             else:
@@ -229,16 +262,32 @@ class Recorder:
             result.append((name, args))
         return result
 
-    def _build_blocks(self):
+    def _build_keyboard_blocks(self):
+        blocks = []
+        events = self._dedupe_key_repeat(self.keyboard_events)
+
+        pending_delay = 0.0
+        for name, args in events:
+            if name == "sleep":
+                pending_delay += args[0]
+                continue
+            steps = []
+            if pending_delay > MIN_RECORDED_GAP:
+                steps.append(Step(type="sleep", duration=round(pending_delay, 2)))
+            pending_delay = 0.0
+            steps.append(Step(type=name, key=args[0]))
+            blocks.append(Block.new_block(steps))
+
+        return blocks
+
+    def _build_mouse_blocks(self):
         blocks = []
 
         if self.record_mouse and self.start_mouse_pos:
             sx, sy = self.start_mouse_pos
-            start_block = Block.new_block([Step(type="move_to", x=sx, y=sy)])
+            start_block = Block.new_mouse_path([MousePathPoint(kind="move", x=sx, y=sy)])
             start_block.label = "Return to starting position"
             blocks.append(start_block)
-
-        events = self._dedupe_key_repeat(self.events)
 
         pending_delay = 0.0
         path_points = None  # list[MousePathPoint] while a path run is open, else None
@@ -249,42 +298,22 @@ class Recorder:
                 blocks.append(Block.new_mouse_path(path_points))
             path_points = None
 
-        for name, args in events:
+        for name, args in self.mouse_events:
             if name == "sleep":
                 pending_delay += args[0]
+                if pending_delay >= MOUSE_BLOCK_SPLIT_GAP:
+                    flush_path()
                 continue
+
+            if path_points is None:
+                path_points = []
 
             if name == "move":
-                if path_points is None:
-                    path_points = []
-                dx, dy = args
-                path_points.append(MousePathPoint(dx, dy, round(pending_delay, 3)))
-                pending_delay = 0.0
-                continue
-
-            if name in ("click", "right_click"):
-                # Clicks stay part of the same continuous mouse activity as any
-                # move samples around them - only a keyboard action (below)
-                # closes out the current Mouse Path block.
-                if path_points is None:
-                    path_points = []
-                path_points.append(MousePathPoint(0, 0, round(pending_delay, 3), kind=name))
-                pending_delay = 0.0
-                continue
-
-            # Keyboard event (press/release) - ends any open mouse activity,
-            # then becomes its own block.
-            flush_path()
-            steps = []
-            if pending_delay > MIN_RECORDED_GAP:
-                steps.append(Step(type="sleep", duration=round(pending_delay, 2)))
+                x, y = args
+                path_points.append(MousePathPoint(kind="move", x=x, y=y, dt=round(pending_delay, 3)))
+            else:
+                path_points.append(MousePathPoint(kind=name, dt=round(pending_delay, 3)))
             pending_delay = 0.0
-            steps.append(Step(type=name, key=args[0]))
-            blocks.append(Block.new_block(steps))
 
         flush_path()
-
-        if not blocks:
-            blocks.append(Block.new_block())
-
         return blocks

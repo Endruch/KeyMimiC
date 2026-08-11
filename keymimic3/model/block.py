@@ -1,18 +1,23 @@
 """
 Data model for the block-based script editor.
 
-A `Script` is an ordered list of top-level `Block`s. A `Block` is a small
-tagged union (kept flat on purpose, rather than a class hierarchy) with three
-kinds:
+A `Script` has two independent, parallel tracks - `keyboard_blocks` and
+`mouse_blocks` - each an ordered list of top-level `Block`s that runs on its
+own executor, both started together (see `execution.executor`). A `Block` is
+a small tagged union (kept flat on purpose, rather than a class hierarchy)
+with three kinds:
 
-- "block": an ordered list of `Step`s (press/release/click/move/sleep/...).
-  Parallel key holds are expressed by ordering, e.g. press A, wait, press B,
+- "block": keyboard-only, an ordered list of `Step`s (press/release/sleep/
+  log/wait_with_keys). Only ever lives in `keyboard_blocks`. Holding two
+  keys "at once" is expressed by ordering, e.g. press A, wait, press B,
   wait, release B, wait, release A.
+- "mouse_path": mouse-only, a single block holding every recorded mouse
+  sample (moves and button down/up) as a list of typed points, so a whole
+  gesture-with-clicks stays one card instead of dozens of tiny ones. Only
+  ever lives in `mouse_blocks`.
 - "repeat": a container that re-runs its `children` blocks `count` times.
-  Children may themselves be repeat/mouse_path/block, so repeats can nest.
-- "mouse_path": a single block holding every recorded mouse-move sample as a
-  list of relative (dx, dy, dt) points, so a whole gesture stays one card in
-  the editor instead of dozens of separate move steps.
+  Belongs to whichever track it's placed in - all of its children must be
+  that same track's kind (repeats may nest).
 """
 
 from __future__ import annotations
@@ -22,16 +27,10 @@ import uuid
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
-STEP_TYPES = (
-    "press", "release", "click", "right_click",
-    "move", "move_to", "sleep", "log", "wait_with_keys",
-)
+STEP_TYPES = ("press", "release", "sleep", "log", "wait_with_keys")
+MOUSE_POINT_KINDS = ("move", "left_down", "left_up", "right_down", "right_up")
 
 BLOCK_KINDS = ("block", "repeat", "mouse_path")
-
-# Rough categorisation used for the auto color-tag of a block.
-_KEYBOARD_STEPS = {"press", "release"}
-_MOUSE_STEPS = {"click", "right_click", "move", "move_to"}
 
 
 def new_id() -> str:
@@ -44,12 +43,10 @@ def _clean(d: dict) -> dict:
 
 @dataclass
 class Step:
+    """A keyboard-track action. Lives only inside a "block"-kind Block."""
+
     type: str
     key: Optional[str] = None
-    dx: Optional[int] = None
-    dy: Optional[int] = None
-    x: Optional[int] = None
-    y: Optional[int] = None
     duration: Optional[float] = None
     variation: Optional[float] = None
     message: Optional[str] = None
@@ -70,12 +67,6 @@ class Step:
             if t == "press" and self.duration is not None:
                 line += f" {self.duration}"
             return line
-        if t in ("click", "right_click"):
-            return t
-        if t == "move":
-            return f"move {self.dx} {self.dy}"
-        if t == "move_to":
-            return f"move_to {self.x} {self.y}"
         if t == "sleep":
             line = f"sleep {self.duration}"
             if self.variation:
@@ -113,16 +104,6 @@ class Step:
             if not args:
                 raise ValueError("release requires a key name")
             return cls(type="release", key=args[0])
-        if name in ("click", "right_click"):
-            return cls(type=name)
-        if name == "move":
-            if len(args) < 2:
-                raise ValueError("move requires dx dy")
-            return cls(type="move", dx=int(float(args[0])), dy=int(float(args[1])))
-        if name == "move_to":
-            if len(args) < 2:
-                raise ValueError("move_to requires x y")
-            return cls(type="move_to", x=int(float(args[0])), y=int(float(args[1])))
         if name == "sleep":
             if not args:
                 raise ValueError("sleep requires a duration")
@@ -146,10 +127,19 @@ class Step:
 
 @dataclass
 class MousePathPoint:
-    dx: int
-    dy: int
-    dt: float = 0.0
-    kind: str = "move"  # "move" | "click" | "right_click" - dx/dy are 0 and unused for clicks
+    """
+    One sample on the mouse track: either an absolute cursor position to
+    move to, or a button down/up event (fired wherever the cursor currently
+    is). Absolute coordinates (not relative deltas) are used deliberately -
+    Windows applies pointer-acceleration curves to relative SendInput
+    moves, which made played-back movement drift from where it was
+    recorded; absolute moves land exactly on the recorded pixel every time.
+    """
+
+    kind: str = "move"  # one of MOUSE_POINT_KINDS
+    x: int = 0
+    y: int = 0
+    dt: float = 0.0  # delay before this point fires, relative to the previous one
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -164,7 +154,7 @@ class Block:
     id: str = field(default_factory=new_id)
     kind: str = "block"
     enabled: bool = True
-    collapsed: bool = False
+    collapsed: bool = True
     color: Optional[str] = None
     label: str = ""
     steps: List[Step] = field(default_factory=list)
@@ -212,7 +202,7 @@ class Block:
             id=d.get("id") or new_id(),
             kind=d.get("kind", "block"),
             enabled=d.get("enabled", True),
-            collapsed=d.get("collapsed", False),
+            collapsed=d.get("collapsed", True),
             color=d.get("color"),
             label=d.get("label", ""),
         )
@@ -243,12 +233,10 @@ class Block:
             return "repeat"
         if self.kind == "mouse_path":
             return "mouse"
-        counts = {"keyboard": 0, "mouse": 0, "sleep": 0, "log": 0, "wait": 0}
+        counts = {"keyboard": 0, "sleep": 0, "log": 0, "wait": 0}
         for step in self.steps:
-            if step.type in _KEYBOARD_STEPS:
+            if step.type in ("press", "release"):
                 counts["keyboard"] += 1
-            elif step.type in _MOUSE_STEPS:
-                counts["mouse"] += 1
             elif step.type == "sleep":
                 counts["sleep"] += 1
             elif step.type == "log":
@@ -258,31 +246,12 @@ class Block:
         best = max(counts, key=lambda k: counts[k])
         return best if counts[best] > 0 else "empty"
 
-    @property
-    def column(self) -> str:
-        """
-        Which side of the timeline this block belongs on: "keyboard" (left),
-        "mouse" (right), or "center" (Repeat - spans both, drawn over the
-        spine, with its own nested timeline for its children).
-
-        A "block" is keyboard unless it contains at least one mouse step -
-        this also covers sleep/log-only (and empty) blocks, which default to
-        the keyboard side since they aren't tied to either device.
-        """
-        if self.kind == "repeat":
-            return "center"
-        if self.kind == "mouse_path":
-            return "mouse"
-        if any(step.type in _MOUSE_STEPS for step in self.steps):
-            return "mouse"
-        return "keyboard"
-
     def estimated_duration(self) -> float:
         """
         Rough total seconds this block takes to run, used to size its card
         on the timeline. Only counts explicit waits (sleep, a press's hold
-        duration, wait_with_keys) - instantaneous actions like a single
-        press/click/move don't meaningfully add to it.
+        duration, wait_with_keys, the dt between mouse points) - instantaneous
+        single actions don't meaningfully add to it.
         """
         if self.kind == "mouse_path":
             return sum(p.dt for p in self.points)
@@ -299,6 +268,25 @@ class Block:
                 total += step.duration or 0.0
         return total
 
+    def leading_wait(self) -> float:
+        """
+        The explicit recorded pause before this block's first real action, if
+        any - a "block"'s first step being a sleep, or a "mouse_path"'s first
+        point's dt. Used purely for rendering: the timeline shows this as its
+        own small "Sleep" segment ahead of the block instead of folding it
+        invisibly into the block's own height.
+        """
+        if self.kind == "block" and self.steps and self.steps[0].type == "sleep":
+            return self.steps[0].duration or 0.0
+        if self.kind == "mouse_path" and self.points:
+            return self.points[0].dt or 0.0
+        return 0.0
+
+    def active_duration(self) -> float:
+        """estimated_duration() minus the leading_wait() already carved out
+        as its own timeline segment, so the two don't double-count."""
+        return max(0.0, self.estimated_duration() - self.leading_wait())
+
     def summary(self) -> str:
         """Short one-line description shown on a collapsed card."""
         if self.kind == "repeat":
@@ -307,10 +295,40 @@ class Block:
             total_dt = sum(p.dt for p in self.points)
             moves = sum(1 for p in self.points if p.kind == "move")
             clicks = len(self.points) - moves
-            click_part = f", {clicks} click(s)" if clicks else ""
+            click_part = f", {clicks} click event(s)" if clicks else ""
             return f"Mouse Path: {moves} move(s){click_part}, {total_dt:.1f}s"
         if not self.steps:
             return "Empty block"
         return " / ".join(s.to_text() for s in self.steps[:3]) + (
             " ..." if len(self.steps) > 3 else ""
         )
+
+    def display_label(self) -> str:
+        """What a card shows: the user's own note if set, else the auto-summary."""
+        return self.label.strip() if self.label.strip() else self.summary()
+
+
+def block_track(block: Block) -> str:
+    """
+    Which track this (sub)tree is tied to: "keyboard", "mouse", or "any" for
+    an empty Repeat that hasn't picked up any content yet. Used to stop a
+    block from being dragged/pasted into the wrong track's list - "block"
+    kind can only ever run on the keyboard track, "mouse_path" only on the
+    mouse track, and a Repeat inherits whatever its children are.
+    """
+    if block.kind == "block":
+        return "keyboard"
+    if block.kind == "mouse_path":
+        return "mouse"
+    if block.kind == "repeat":
+        tracks = {block_track(c) for c in block.children} - {"any"}
+        if len(tracks) > 1:
+            return "conflict"  # shouldn't happen in well-formed data
+        return next(iter(tracks), "any")
+    return "any"
+
+
+def block_fits_track(block: Block, track: str) -> bool:
+    """True if `block` (and everything nested inside it) may live on `track`."""
+    found = block_track(block)
+    return found in (track, "any")

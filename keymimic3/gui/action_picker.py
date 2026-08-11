@@ -1,15 +1,16 @@
 """
-Action Picker dialog: choose an action type (keyboard / mouse / sleep / log /
-wait-with-keys) and fill in its parameters, then produce a `Step`.
+Action Picker dialog: choose a keyboard-track action (keyboard / sleep / log
+/ wait-with-keys) and fill in its parameters, then produce a `Step`.
 
-This is the single entry point for adding or editing a step inside a block -
-it replaces both the old standalone Help dialog and the old Visual Keyboard
-Editor from v2.0.
+This is the entry point for adding or editing a step inside a "block"-kind
+(keyboard-track) block. Mouse-track content is edited separately, through
+MousePathEditorDialog - the two tracks use different data (Step vs
+MousePathPoint), so there's no single shared "type" concept anymore.
 """
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QStackedWidget, QWidget, QLabel,
-    QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox, QSpinBox,
+    QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox,
     QLineEdit, QComboBox, QDialogButtonBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QMessageBox,
 )
@@ -18,10 +19,9 @@ from ..core.key_names import resolve_key
 from ..model import Step
 from .keyboard_picker import KeyboardPickerWidget
 
-TYPE_PAGES = ["keyboard", "mouse", "sleep", "log", "wait_with_keys"]
+TYPE_PAGES = ["keyboard", "sleep", "log", "wait_with_keys"]
 TYPE_LABELS = {
     "keyboard": "Keyboard",
-    "mouse": "Mouse",
     "sleep": "Sleep",
     "log": "Log",
     "wait_with_keys": "Wait + Tap Keys",
@@ -31,15 +31,11 @@ TYPE_LABELS = {
 class ActionPickerDialog(QDialog):
     """Modal dialog that returns a `Step` in `self.result_step` if accepted."""
 
-    def __init__(self, parent=None, initial_step: Step = None, allowed_types=None):
+    def __init__(self, parent=None, initial_step: Step = None):
         super().__init__(parent)
         self.setWindowTitle("Add Action" if initial_step is None else "Edit Action")
         self.setMinimumWidth(520)
         self.result_step = None
-        # Which top-level types are selectable, e.g. {"mouse", "sleep", "log"}
-        # for a step being added to an already-mouse block, so a block can't
-        # end up mixing keyboard and mouse content. None = no restriction.
-        self.allowed_types = list(allowed_types) if allowed_types else list(TYPE_PAGES)
 
         self._build_ui()
         if initial_step is not None:
@@ -52,15 +48,13 @@ class ActionPickerDialog(QDialog):
 
         self.type_selector = QComboBox()
         for key in TYPE_PAGES:
-            if key in self.allowed_types:
-                self.type_selector.addItem(TYPE_LABELS[key], key)
+            self.type_selector.addItem(TYPE_LABELS[key], key)
         self.type_selector.currentIndexChanged.connect(self._on_type_changed)
         root.addWidget(QLabel("Action type:"))
         root.addWidget(self.type_selector)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_keyboard_page())
-        self.stack.addWidget(self._build_mouse_page())
         self.stack.addWidget(self._build_sleep_page())
         self.stack.addWidget(self._build_log_page())
         self.stack.addWidget(self._build_wait_page())
@@ -70,10 +64,6 @@ class ActionPickerDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
-
-        # Make sure the stack matches whichever item ended up selected by
-        # default - don't rely on currentIndexChanged having fired already.
-        self._on_type_changed(self.type_selector.currentIndex())
 
     def _build_keyboard_page(self) -> QWidget:
         page = QWidget()
@@ -106,58 +96,6 @@ class ActionPickerDialog(QDialog):
         layout.addLayout(duration_row)
 
         return page
-
-    def _build_mouse_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
-
-        self.mouse_type = QComboBox()
-        self.mouse_type.addItem("Click (left)", "click")
-        self.mouse_type.addItem("Right Click", "right_click")
-        self.mouse_type.addItem("Move (relative)", "move")
-        self.mouse_type.addItem("Move To (absolute)", "move_to")
-        self.mouse_type.currentIndexChanged.connect(self._on_mouse_type_changed)
-        layout.addWidget(self.mouse_type)
-
-        self.mouse_params = QStackedWidget()
-
-        empty_page = QWidget()
-        self.mouse_params.addWidget(empty_page)  # click / right_click: no params
-
-        move_page = QWidget()
-        move_layout = QHBoxLayout(move_page)
-        self.move_dx = QSpinBox()
-        self.move_dx.setRange(-10000, 10000)
-        self.move_dy = QSpinBox()
-        self.move_dy.setRange(-10000, 10000)
-        move_layout.addWidget(QLabel("dx:"))
-        move_layout.addWidget(self.move_dx)
-        move_layout.addWidget(QLabel("dy:"))
-        move_layout.addWidget(self.move_dy)
-        move_layout.addStretch()
-        self.mouse_params.addWidget(move_page)
-
-        move_to_page = QWidget()
-        move_to_layout = QHBoxLayout(move_to_page)
-        self.move_x = QSpinBox()
-        self.move_x.setRange(0, 20000)
-        self.move_y = QSpinBox()
-        self.move_y.setRange(0, 20000)
-        move_to_layout.addWidget(QLabel("x:"))
-        move_to_layout.addWidget(self.move_x)
-        move_to_layout.addWidget(QLabel("y:"))
-        move_to_layout.addWidget(self.move_y)
-        move_to_layout.addStretch()
-        self.mouse_params.addWidget(move_to_page)
-
-        layout.addWidget(self.mouse_params)
-        layout.addStretch()
-        return page
-
-    def _on_mouse_type_changed(self, _index):
-        kind = self.mouse_type.currentData()
-        page_index = {"click": 0, "right_click": 0, "move": 1, "move_to": 2}[kind]
-        self.mouse_params.setCurrentIndex(page_index)
 
     def _build_sleep_page(self) -> QWidget:
         page = QWidget()
@@ -244,7 +182,6 @@ class ActionPickerDialog(QDialog):
     def _load_step(self, step: Step):
         type_key = {
             "press": "keyboard", "release": "keyboard",
-            "click": "mouse", "right_click": "mouse", "move": "mouse", "move_to": "mouse",
             "sleep": "sleep", "log": "log", "wait_with_keys": "wait_with_keys",
         }.get(step.type, "keyboard")
         combo_index = self.type_selector.findData(type_key)
@@ -257,15 +194,6 @@ class ActionPickerDialog(QDialog):
             if step.key:
                 self.keyboard_picker.set_selected_key(step.key)
             self.press_duration.setValue(step.duration or 0.0)
-        elif step.type in ("click", "right_click", "move", "move_to"):
-            data_map = {"click": 0, "right_click": 1, "move": 2, "move_to": 3}
-            self.mouse_type.setCurrentIndex(data_map[step.type])
-            if step.type == "move":
-                self.move_dx.setValue(step.dx or 0)
-                self.move_dy.setValue(step.dy or 0)
-            elif step.type == "move_to":
-                self.move_x.setValue(step.x or 0)
-                self.move_y.setValue(step.y or 0)
         elif step.type == "sleep":
             self.sleep_duration.setValue(step.duration or 0.0)
             self.sleep_variation.setValue(step.variation or 0.0)
@@ -296,14 +224,6 @@ class ActionPickerDialog(QDialog):
                 duration = self.press_duration.value()
                 return Step(type="press", key=key, duration=duration if duration > 0 else None)
             return Step(type="release", key=key)
-
-        if kind == "mouse":
-            mouse_kind = self.mouse_type.currentData()
-            if mouse_kind in ("click", "right_click"):
-                return Step(type=mouse_kind)
-            if mouse_kind == "move":
-                return Step(type="move", dx=self.move_dx.value(), dy=self.move_dy.value())
-            return Step(type="move_to", x=self.move_x.value(), y=self.move_y.value())
 
         if kind == "sleep":
             return Step(

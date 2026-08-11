@@ -107,6 +107,8 @@ class ScriptExecutor(threading.Thread):
                         self._run_blocks(block.children)
                 elif block.kind == "mouse_path":
                     self._run_mouse_path(block.points)
+                else:
+                    self._log(f"Unknown block kind: {block.kind}")
             finally:
                 self.signals.block_finished.emit(block.id)
 

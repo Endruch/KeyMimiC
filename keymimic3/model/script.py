@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
-from .block import Block
+from .block import Block, block_fits_track
 
 SCRIPT_FORMAT_VERSION = 2
 
@@ -64,15 +64,23 @@ def validate_script(script: Script) -> None:
     """
     if not script.keyboard_blocks and not script.mouse_blocks:
         raise ScriptValidationError("Script is empty (no keyboard or mouse blocks).")
-    _validate_blocks(script.keyboard_blocks)
-    _validate_blocks(script.mouse_blocks)
+    _validate_blocks(script.keyboard_blocks, "keyboard")
+    _validate_blocks(script.mouse_blocks, "mouse")
 
 
-def _validate_blocks(blocks: List[Block]) -> None:
+def _validate_blocks(blocks: List[Block], track: str) -> None:
     for block in blocks:
+        # Catches a hand-edited/malformed profile file putting a keyboard-only
+        # block in mouse_blocks (or vice versa) - the GUI's drag-and-drop guard
+        # (block_fits_track) prevents this through normal editing, but nothing
+        # enforces it for JSON loaded straight off disk.
+        if not block_fits_track(block, track):
+            raise ScriptValidationError(
+                f"Block {block.id!r} ({block.kind}) does not belong on the {track} track."
+            )
         if block.kind == "repeat":
             if block.count < 1:
                 raise ScriptValidationError(
                     f"Repeat block must run at least once (got {block.count})."
                 )
-            _validate_blocks(block.children)
+            _validate_blocks(block.children, track)

@@ -117,9 +117,9 @@ class ThreadPanel(QFrame):
         self.record_btn.clicked.connect(self._on_toggle_recording)
         toolbar1.addWidget(self.record_btn)
 
-        settings_btn = QPushButton("Settings")
-        settings_btn.clicked.connect(self._on_settings)
-        toolbar1.addWidget(settings_btn)
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.clicked.connect(self._on_settings)
+        toolbar1.addWidget(self.settings_btn)
 
         self.loop_check = QCheckBox("Loop")
         self.loop_check.setChecked(self.script.loop)
@@ -206,6 +206,7 @@ class ThreadPanel(QFrame):
         for w in (
             self.profile_combo, self.new_profile_btn, self.rename_profile_btn,
             self.delete_profile_btn, self.loop_check, self.humanize_spin,
+            self.settings_btn,
         ):
             w.setEnabled(not locked)
         # Only gated by "running", not "recording" - otherwise there'd be no way
@@ -278,7 +279,7 @@ class ThreadPanel(QFrame):
     def _update_start_button(self):
         try:
             validate_script(self.script)
-            self.start_btn.setEnabled(not self.running)
+            self.start_btn.setEnabled(not self.is_locked())
             self.start_btn.setToolTip("")
         except ScriptValidationError as exc:
             self.start_btn.setEnabled(False)
@@ -412,6 +413,7 @@ class ThreadPanel(QFrame):
         self.is_recording = True
         self._update_hotkey_labels()
         self._update_lock_state()
+        self._update_start_button()
         self._refresh_blocks_area()
 
         self.recorder = Recorder()
@@ -437,6 +439,7 @@ class ThreadPanel(QFrame):
             self.recorder = None
         self._update_hotkey_labels()
         self._update_lock_state()
+        self._update_start_button()
 
     def stop_recording(self):
         if not self.is_recording or not self.recorder:
@@ -444,6 +447,7 @@ class ThreadPanel(QFrame):
         self.is_recording = False
         self._update_hotkey_labels()
         self._update_lock_state()
+        self._update_start_button()
         keyboard_blocks, mouse_blocks = self.recorder.stop()
         self.recorder = None
 
@@ -478,7 +482,7 @@ class ThreadPanel(QFrame):
     # -- run / stop -------------------------------------------------------
 
     def start(self):
-        if self.running:
+        if self.is_locked():
             return
         try:
             validate_script(self.script)
@@ -524,6 +528,19 @@ class ThreadPanel(QFrame):
         if self.mouse_executor:
             self.mouse_executor.stop()
         self.stop_btn.setEnabled(False)
+
+    def join_executors(self, timeout: float = 2.0):
+        """
+        Block until both track executors have actually exited (or timeout).
+        Used on app shutdown: stop() only signals them to stop, it doesn't
+        wait - without this, the process can exit while a background
+        executor thread is still mid-shutdown, and since these are daemon
+        threads they'd simply be killed rather than getting to run their
+        release-all-held-keys cleanup.
+        """
+        for executor in (self.keyboard_executor, self.mouse_executor):
+            if executor is not None and executor.is_alive():
+                executor.join(timeout=timeout)
 
     def _on_block_started(self, block_id):
         self.current_block_ids.add(block_id)

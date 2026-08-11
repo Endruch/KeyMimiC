@@ -216,12 +216,11 @@ class Block:
         return block
 
     def clone(self) -> "Block":
-        """Deep copy with a fresh id (and fresh ids for nested children)."""
+        """Deep copy with a fresh id for itself and every nested descendant
+        (not just direct children) - otherwise duplicating a Repeat-of-Repeats
+        would leave duplicate ids alive deeper in the tree."""
         cloned = Block.from_dict(self.to_dict())
-        cloned.id = new_id()
-        if cloned.kind == "repeat":
-            for child in cloned.children:
-                child.id = new_id()
+        _reassign_ids(cloned)
         return cloned
 
     # -- presentation helpers ------------------------------------------------
@@ -306,6 +305,15 @@ class Block:
     def display_label(self) -> str:
         """What a card shows: the user's own note if set, else the auto-summary."""
         return self.label.strip() if self.label.strip() else self.summary()
+
+
+def _reassign_ids(block: Block) -> None:
+    """Give `block` and every descendant nested inside it (recursively, through
+    any depth of Repeat-in-Repeat) a fresh id, in place."""
+    block.id = new_id()
+    if block.kind == "repeat":
+        for child in block.children:
+            _reassign_ids(child)
 
 
 def block_track(block: Block) -> str:

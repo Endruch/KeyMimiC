@@ -216,15 +216,20 @@ class StepListWidget(QListWidget):
             return
 
         target_item = self.itemAt(event.position().toPoint())
-        raw_index = self.row(target_item) if target_item else len(self.block.steps) - 1
-        raw_index = max(0, min(raw_index, len(self.block.steps) - 1))
-        # Removing old_index first shifts everything after it down by one, so the
-        # drop target's effective index must be adjusted when dragging downward.
-        new_index = raw_index - 1 if old_index < raw_index else raw_index
+        # Index to insert *before*, measured in the list as it stands right
+        # now (before old_index is removed). target_item is None when the
+        # drop lands past the last row - that means "insert at the end".
+        insert_before = self.row(target_item) if target_item else len(self.block.steps)
+        # Removing old_index first shifts every later index down by one, so a
+        # target that was after the dragged item needs the same adjustment -
+        # otherwise a drop past the last row would clamp back to an existing
+        # index instead of actually landing at the end.
+        if insert_before > old_index:
+            insert_before -= 1
 
         step = self.block.steps.pop(old_index)
-        new_index = max(0, min(new_index, len(self.block.steps)))
-        self.block.steps.insert(new_index, step)
+        insert_before = max(0, min(insert_before, len(self.block.steps)))
+        self.block.steps.insert(insert_before, step)
         event.acceptProposedAction()
         self.panel.notify_change()
 
@@ -680,11 +685,10 @@ class BlockListWidget(QListWidget):
 
     # -- drag & drop --------------------------------------------------------
     #
-    # Blocks can be dropped into ANY BlockListWidget - the same list (reorder),
-    # a different nesting level within the same panel (e.g. root <-> inside a
-    # Repeat), or a list belonging to a completely different open ThreadPanel -
-    # as long as the dragged block (and everything nested inside it) is
-    # compatible with the target list's track (see model.block_fits_track).
+    # Blocks can be dropped into ANY BlockListWidget in the panel - the same
+    # list (reorder) or a different nesting level (e.g. root <-> inside a
+    # Repeat) - as long as the dragged block (and everything nested inside
+    # it) is compatible with the target list's track (see model.block_fits_track).
     # The dragged block's identity is carried via a direct object reference to
     # its source BlockListWidget (QMimeData.setProperty), which only works for
     # in-process drags - fine here, dragging out of the app isn't a thing.
@@ -728,10 +732,6 @@ class BlockListWidget(QListWidget):
             self._reorder_within(block_id, event)
             return
 
-        if source_widget.panel.is_locked():
-            event.ignore()
-            return
-
         dragged = source_widget.peek_block(block_id)
         if dragged is None:
             event.ignore()
@@ -755,10 +755,7 @@ class BlockListWidget(QListWidget):
         new_index = max(0, min(new_index, len(self.blocks_ref)))
         self.blocks_ref.insert(new_index, block)
         event.acceptProposedAction()
-
-        source_widget.panel.notify_change()
-        if self.panel is not source_widget.panel:
-            self.panel.notify_change()
+        self.panel.notify_change()
 
     def _reorder_within(self, block_id, event):
         old_index = next((i for i, b in enumerate(self.blocks_ref) if b.id == block_id), None)
@@ -767,15 +764,20 @@ class BlockListWidget(QListWidget):
             return
 
         target_item = self.itemAt(event.position().toPoint())
-        raw_index = self._resolve_blocks_index(target_item)
-        raw_index = max(0, min(raw_index, len(self.blocks_ref) - 1))
-        # Removing old_index first shifts everything after it down by one, so the
-        # drop target's effective index must be adjusted when dragging downward.
-        new_index = raw_index - 1 if old_index < raw_index else raw_index
+        # Index to insert *before*, measured in blocks_ref as it stands right
+        # now (before old_index is removed). None (dropped past the last
+        # row, real or ghost) resolves to len(blocks_ref) - "insert at the end".
+        insert_before = self._resolve_blocks_index(target_item)
+        # Removing old_index first shifts every later index down by one, so a
+        # target that was after the dragged item needs the same adjustment -
+        # otherwise a drop past the last row would clamp back to an existing
+        # index instead of actually landing at the end.
+        if insert_before > old_index:
+            insert_before -= 1
 
         block = self.blocks_ref.pop(old_index)
-        new_index = max(0, min(new_index, len(self.blocks_ref)))
-        self.blocks_ref.insert(new_index, block)
+        insert_before = max(0, min(insert_before, len(self.blocks_ref)))
+        self.blocks_ref.insert(insert_before, block)
         event.acceptProposedAction()
         self.panel.notify_change()
 

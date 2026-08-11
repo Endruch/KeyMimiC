@@ -74,7 +74,7 @@ class MainWindow(QMainWindow):
             if self.panel.running:
                 self.panel.stop()
         elif action == "start":
-            if not self.panel.running and self.panel.start_btn.isEnabled():
+            if not self.panel.is_locked() and self.panel.start_btn.isEnabled():
                 self.panel.start()
         elif action == "start_record":
             if not self.panel.running and not self.panel.is_recording:
@@ -90,6 +90,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.panel.stop()
+        self.panel.join_executors()
         self.panel.cancel_recording()
         self.hotkey_manager.stop()
         event.accept()

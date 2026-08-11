@@ -19,10 +19,6 @@ DROP_TARGET_BORDER = "#22d3ee"    # highlight around a list while a block is dra
 ENABLED_ON_COLOR = "#16a34a"    # ON/OFF toggle button when the block is enabled
 DISABLED_OFF_COLOR = "#4b4f56"  # ON/OFF toggle button when the block is disabled
 
-SPINE_COLOR = "#4b4f58"       # the vertical timeline line itself
-SPINE_TICK_COLOR = "#7a7f88"  # short tick mark at each block boundary
-SPINE_LABEL_COLOR = "#9a9da3"  # elapsed-time text next to some ticks
-
 BACKGROUND = "#1e1f22"
 PANEL_BG = "#26282c"
 CARD_BG = "#2f3136"
@@ -113,11 +109,6 @@ QListWidget::item:selected {{
 
 QLabel#MutedLabel {{
     color: {TEXT_MUTED};
-}}
-
-QLabel#UnsavedIndicator {{
-    color: {DANGER};
-    font-weight: 700;
 }}
 
 QScrollArea {{

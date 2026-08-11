@@ -14,6 +14,10 @@ TYPE_COLORS = {
 DISABLED_COLOR = "#5b5f66"      # overrides type color when a block is disabled
 CURRENT_BLOCK_BORDER = "#22d3ee"  # live-highlight border while a block executes
 SELECTED_BORDER = "#eab308"       # border used for multi-selected blocks
+DROP_TARGET_BORDER = "#22d3ee"    # highlight around a list while a block is dragged over it
+
+ENABLED_ON_COLOR = "#16a34a"    # ON/OFF toggle button when the block is enabled
+DISABLED_OFF_COLOR = "#4b4f56"  # ON/OFF toggle button when the block is disabled
 
 BACKGROUND = "#1e1f22"
 PANEL_BG = "#26282c"
@@ -30,7 +34,7 @@ QWidget {{
     background-color: {BACKGROUND};
     color: {TEXT};
     font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
+    font-size: 12px;
 }}
 
 QMainWindow, QDialog {{
@@ -46,8 +50,8 @@ QFrame#ThreadPanel {{
 QPushButton {{
     background-color: #35373c;
     border: 1px solid {BORDER};
-    border-radius: 5px;
-    padding: 5px 10px;
+    border-radius: 4px;
+    padding: 2px 7px;
     color: {TEXT};
 }}
 QPushButton:hover {{
@@ -85,7 +89,7 @@ QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     background-color: #1c1d20;
     border: 1px solid {BORDER};
     border-radius: 4px;
-    padding: 3px 5px;
+    padding: 2px 4px;
     color: {TEXT};
     selection-background-color: {ACCENT};
 }}
@@ -97,7 +101,7 @@ QListWidget {{
 QListWidget::item {{
     background: transparent;
     border: none;
-    margin: 3px 0px;
+    margin: 1px 0px;
 }}
 QListWidget::item:selected {{
     background: transparent;
@@ -147,5 +151,23 @@ def block_card_stylesheet(color_hex: str, disabled: bool, is_current: bool, sele
     }}
     QFrame#BlockCard QLabel {{
         color: {text_color};
+    }}
+    """
+
+
+def toggle_button_stylesheet(enabled: bool) -> str:
+    """Small ON/OFF pill button used as the block enable/disable control."""
+    color = ENABLED_ON_COLOR if enabled else DISABLED_OFF_COLOR
+    return f"""
+    QPushButton {{
+        background-color: {color};
+        border: 1px solid {color};
+        border-radius: 4px;
+        color: white;
+        font-weight: 600;
+        padding: 1px 6px;
+    }}
+    QPushButton:hover {{
+        background-color: {color};
     }}
     """

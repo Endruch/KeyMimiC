@@ -5,18 +5,17 @@ and its own log. Up to 4 of these live side by side in the MainWindow.
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QCheckBox, QSpinBox, QScrollArea, QPlainTextEdit, QMessageBox,
-    QInputDialog, QWidget,
+    QInputDialog,
 )
 
 from ..model import Script, Block, validate_script, ScriptValidationError
 from ..managers import ProfileManager, Recorder
 from ..execution import ScriptExecutor
 from ..core.constants import IS_WINDOWS
-from . import styles
 from .block_widgets import BlockListPanel, BlockListWidget
 from .settings_dialog import SettingsDialog
 
@@ -24,13 +23,22 @@ from .settings_dialog import SettingsDialog
 class ThreadPanel(QFrame):
     """A single independent macro thread panel."""
 
-    def __init__(self, panel_id, on_close, hotkey_config, on_hotkeys_changed=None, parent=None):
+    def __init__(self, panel_id, on_close, hotkey_config, on_hotkeys_changed=None,
+                 clipboard=None, on_before_record=None, parent=None):
         super().__init__(parent)
         self.setObjectName("ThreadPanel")
         self.panel_id = panel_id
         self.on_close = on_close
         self.hotkey_config = hotkey_config
         self.on_hotkeys_changed = on_hotkeys_changed
+        # Called right before recording starts - MainWindow uses it to stop
+        # every currently running script across all panels (so another
+        # thread's own injected keystrokes can't visually interfere, and so
+        # nothing keeps moving the mouse/pressing keys while you're recording).
+        self.on_before_record = on_before_record
+        # Shared across every open ThreadPanel (same list object, passed in by
+        # MainWindow) so Copy in one thread and Paste in another just works.
+        self.clipboard = clipboard if clipboard is not None else []
 
         self.profile_manager = ProfileManager(panel_id)
         self.current_profile = self.profile_manager.get_profile_names()[0]
@@ -39,7 +47,6 @@ class ThreadPanel(QFrame):
         self._undo_stack = [self.script.to_dict()]
         self._undo_index = 0
         self._dirty = False
-        self._clipboard = []
 
         self.block_widgets = {}      # block id -> BlockCardWidget, refreshed on every render
         self.current_block_id = None
@@ -55,7 +62,7 @@ class ThreadPanel(QFrame):
     # -- panel interface used by block_widgets.py --------------------------
 
     def is_locked(self) -> bool:
-        return self.running
+        return self.running or self.is_recording
 
     def is_current_block(self, block_id) -> bool:
         return block_id == self.current_block_id
@@ -194,19 +201,22 @@ class ThreadPanel(QFrame):
         self.log_box.setFixedHeight(120)
         root.addWidget(self.log_box)
 
-        self._update_record_label()
+        self._update_hotkey_labels()
         self._update_undo_redo_buttons()
         self._update_start_button()
         self._update_lock_state()
 
     def _update_lock_state(self):
-        """Disable everything that mutates the script/profile while it's running."""
-        locked = self.running
+        """Disable everything that mutates the script/profile while running or recording."""
+        locked = self.is_locked()
         for w in (
             self.profile_combo, self.new_profile_btn, self.rename_profile_btn,
-            self.delete_profile_btn, self.record_btn, self.loop_check, self.humanize_spin,
+            self.delete_profile_btn, self.loop_check, self.humanize_spin,
         ):
             w.setEnabled(not locked)
+        # Only gated by "running", not "recording" - otherwise there'd be no way
+        # to click Record again to stop an in-progress recording.
+        self.record_btn.setEnabled(not self.running)
         for btn in self._bulk_buttons:
             btn.setEnabled(not locked)
 
@@ -373,11 +383,13 @@ class ThreadPanel(QFrame):
 
     # -- recording ----------------------------------------------------------
 
-    def _update_record_label(self):
+    def _update_hotkey_labels(self):
         if self.is_recording:
             self.record_btn.setText(f"Stop Recording ({self.hotkey_config.format_hotkey('stop_record')})")
         else:
             self.record_btn.setText(f"Record ({self.hotkey_config.format_hotkey('start_record')})")
+        self.start_btn.setText(f"Start ({self.hotkey_config.format_hotkey('start')})")
+        self.stop_btn.setText(f"Stop ({self.hotkey_config.format_hotkey('stop')})")
 
     def _on_toggle_recording(self):
         self.stop_recording() if self.is_recording else self.start_recording()
@@ -388,17 +400,43 @@ class ThreadPanel(QFrame):
             return
         if self.is_recording or self.running:
             return
+        if self.on_before_record:
+            self.on_before_record()
         self.is_recording = True
-        self._update_record_label()
+        self._update_hotkey_labels()
+        self._update_lock_state()
+        self._refresh_blocks_area()
+
         self.recorder = Recorder()
+        self.recorder.set_control_hotkeys({
+            "start_record": self.hotkey_config.get_hotkey("start_record"),
+            "stop_record": self.hotkey_config.get_hotkey("stop_record"),
+        })
+        self.recorder.signals.control_hotkey.connect(self._on_recorder_control_hotkey)
         self.recorder.start(record_mouse=self.hotkey_config.record_mouse)
         self._log("Recording started...")
+
+    def _on_recorder_control_hotkey(self, action):
+        if action == "stop_record":
+            self.stop_recording()
+
+    def cancel_recording(self):
+        """Stop recording without turning it into a profile (used when closing a panel)."""
+        if not self.is_recording:
+            return
+        self.is_recording = False
+        if self.recorder:
+            self.recorder.stop()
+            self.recorder = None
+        self._update_hotkey_labels()
+        self._update_lock_state()
 
     def stop_recording(self):
         if not self.is_recording or not self.recorder:
             return
         self.is_recording = False
-        self._update_record_label()
+        self._update_hotkey_labels()
+        self._update_lock_state()
         blocks = self.recorder.stop()
         self.recorder = None
 
@@ -406,19 +444,26 @@ class ThreadPanel(QFrame):
         name = f"Recording {timestamp}"
         new_script = Script(thread_name=name, blocks=blocks)
         self.profile_manager.add_profile(name, new_script)
+
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()
         self.profile_combo.addItems(self.profile_manager.get_profile_names())
-        self.profile_combo.setCurrentText(name)
+        self.profile_combo.setCurrentText(self.current_profile)
         self.profile_combo.blockSignals(False)
-        self._load_profile(name)
+
+        # Switching the view to the new recording would silently throw away
+        # any unsaved edits in whatever was open here - go through the same
+        # save/discard/cancel prompt as a normal profile switch.
+        if self._confirm_discard_if_dirty():
+            self.profile_combo.setCurrentText(name)
+            self._load_profile(name)
         self._log(f"Recording stopped, saved as '{name}'")
 
     # -- settings -------------------------------------------------------------
 
     def _on_settings(self):
         def _on_saved():
-            self._update_record_label()
+            self._update_hotkey_labels()
             if self.on_hotkeys_changed:
                 self.on_hotkeys_changed()
         SettingsDialog(self, self.hotkey_config, on_save=_on_saved).exec()
@@ -492,6 +537,7 @@ class ThreadPanel(QFrame):
 
     def _on_close_panel(self):
         self.stop()
+        self.cancel_recording()
         if not self._confirm_discard_if_dirty():
             return
         if self.on_close:
@@ -560,15 +606,17 @@ class ThreadPanel(QFrame):
         if not lw:
             return
         ids = set(lw.selected_block_ids())
-        self._clipboard = [b.clone() for b in lw.blocks_ref if b.id in ids]
-        self._log(f"Copied {len(self._clipboard)} block(s)")
+        # In-place mutation (not rebinding self.clipboard) - this list object is
+        # shared with every other open ThreadPanel, so Paste there sees it too.
+        self.clipboard[:] = [b.clone() for b in lw.blocks_ref if b.id in ids]
+        self._log(f"Copied {len(self.clipboard)} block(s)")
 
     def _on_paste(self):
-        if not self._clipboard:
+        if not self.clipboard:
             return
         lw = self._active_list_widget()
         target = lw.blocks_ref if lw is not None else self.script.blocks
-        for b in self._clipboard:
+        for b in self.clipboard:
             target.append(b.clone())
         self.notify_change()
 

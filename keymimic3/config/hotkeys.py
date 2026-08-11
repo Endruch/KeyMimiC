@@ -6,10 +6,10 @@ from ..core.key_names import get_key_display_name
 from .paths import APP_DATA_DIR, HOTKEYS_FILE
 
 DEFAULT_HOTKEYS = {
-    "start": {"key": "f6", "ctrl": False, "shift": False, "alt": False},
-    "stop": {"key": "f7", "ctrl": False, "shift": False, "alt": False},
-    "start_record": {"key": "f8", "ctrl": False, "shift": False, "alt": False},
-    "stop_record": {"key": "f9", "ctrl": False, "shift": False, "alt": False},
+    "start": {"key": "f6", "ctrl": False, "shift": True, "alt": False},
+    "stop": {"key": "f7", "ctrl": False, "shift": True, "alt": False},
+    "start_record": {"key": "f8", "ctrl": False, "shift": True, "alt": False},
+    "stop_record": {"key": "f9", "ctrl": False, "shift": True, "alt": False},
 }
 
 ACTION_LABELS = {
@@ -27,6 +27,7 @@ class HotkeyConfig:
         self.hotkeys = {k: dict(v) for k, v in DEFAULT_HOTKEYS.items()}
         self.record_mouse = True
         self.load()
+        self._normalize()
 
     def load(self):
         if HOTKEYS_FILE.exists():
@@ -39,6 +40,23 @@ class HotkeyConfig:
                 self.record_mouse = data.get("record_mouse", True)
             except Exception:
                 pass
+
+    def _normalize(self):
+        """
+        Every hotkey must have exactly one modifier. Configs saved before this
+        was required (or otherwise malformed) get Shift as a safe default
+        instead of silently ending up with zero or multiple modifiers set.
+        """
+        changed = False
+        for binding in self.hotkeys.values():
+            flags = (binding.get("ctrl", False), binding.get("shift", False), binding.get("alt", False))
+            if sum(1 for f in flags if f) != 1:
+                binding["ctrl"] = False
+                binding["shift"] = True
+                binding["alt"] = False
+                changed = True
+        if changed:
+            self.save()
 
     def save(self):
         try:

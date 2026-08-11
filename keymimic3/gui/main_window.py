@@ -8,16 +8,24 @@ for safety/predictability):
                       key that never leaves something running by accident).
 - "start"         -> starts the lowest-numbered idle panel whose script
                       currently validates.
-- "start_record"  -> starts recording on the lowest-numbered panel that is
-                      neither running nor already recording.
+- "start_record"  -> the hotkey has no implicit "target" panel, so it always
+                      opens a brand new thread and records into that (never
+                      silently takes over an existing panel's current view).
 - "stop_record"   -> stops recording on whichever panel is currently
                       recording.
+
+Starting a recording (either via the Record button on a panel, or via the
+global hotkey above) always stops every currently running script first, in
+every open panel - see ThreadPanel.on_before_record / _stop_all_running
+below. Recording only ever captures real hardware input anyway (Recorder
+filters out SendInput-injected events), but a macro still moving the mouse
+or pressing keys while you're trying to record is too confusing to allow.
 """
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QScrollArea,
-    QMessageBox, QLabel,
+    QMessageBox,
 )
 import queue
 
@@ -33,14 +41,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("KeyMimic v3")
-        self.resize(1500, 900)
+        self.resize(550, 900)
         self.setStyleSheet(styles.APP_STYLESHEET)
 
         self.hotkey_config = HotkeyConfig()
         self.hotkey_manager = HotkeyManager()
+        self.clipboard = []  # shared block clipboard, passed by reference to every panel
 
         self.panels: dict[int, ThreadPanel] = {}
-        self._next_panel_id = 1
 
         self._build_ui()
         self.add_panel()
@@ -57,15 +65,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
 
-        toolbar = QHBoxLayout()
-        add_btn = QPushButton("+ Add Thread")
-        add_btn.setObjectName("PrimaryButton")
-        add_btn.clicked.connect(self.add_panel)
-        toolbar.addWidget(add_btn)
-        toolbar.addWidget(QLabel("KeyMimic v3 - block-based macro automation"))
-        toolbar.addStretch()
-        outer.addLayout(toolbar)
-
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         outer.addWidget(self.scroll_area, stretch=1)
@@ -75,20 +74,40 @@ class MainWindow(QMainWindow):
         self.panels_layout.setAlignment(Qt.AlignLeft)
         self.scroll_area.setWidget(self.panels_container)
 
+        self.add_panel_btn = QPushButton("+\nAdd\nThread")
+        self.add_panel_btn.setObjectName("PrimaryButton")
+        self.add_panel_btn.setFixedWidth(70)
+        self.add_panel_btn.setMinimumHeight(120)
+        self.add_panel_btn.clicked.connect(self.add_panel)
+
     # -- panel management -------------------------------------------------
 
+    def _lowest_free_id(self):
+        used = set(self.panels.keys())
+        for i in range(1, MAX_PANELS + 1):
+            if i not in used:
+                return i
+        return None
+
     def add_panel(self):
-        if len(self.panels) >= MAX_PANELS:
+        """Create a new thread panel and return it (or None if at MAX_PANELS)."""
+        panel_id = self._lowest_free_id()
+        if panel_id is None:
             QMessageBox.information(self, "Limit reached", f"Maximum of {MAX_PANELS} threads.")
-            return
-        panel_id = self._next_panel_id
-        self._next_panel_id += 1
+            return None
         panel = ThreadPanel(
             panel_id, self._on_panel_closed, self.hotkey_config,
-            on_hotkeys_changed=self._register_hotkeys,
+            on_hotkeys_changed=self._register_hotkeys, clipboard=self.clipboard,
+            on_before_record=self._stop_all_running,
         )
         self.panels[panel_id] = panel
-        self.panels_layout.addWidget(panel)
+        self._relayout_panels()
+        return panel
+
+    def _stop_all_running(self):
+        for panel in self.panels.values():
+            if panel.running:
+                panel.stop()
 
     def _on_panel_closed(self, panel_id):
         panel = self.panels.pop(panel_id, None)
@@ -97,6 +116,16 @@ class MainWindow(QMainWindow):
             panel.deleteLater()
         if not self.panels:
             self.add_panel()
+        else:
+            self._relayout_panels()
+
+    def _relayout_panels(self):
+        while self.panels_layout.count():
+            self.panels_layout.takeAt(0)
+        for panel_id in sorted(self.panels):
+            self.panels_layout.addWidget(self.panels[panel_id])
+        self.add_panel_btn.setVisible(len(self.panels) < MAX_PANELS)
+        self.panels_layout.addWidget(self.add_panel_btn)
 
     # -- hotkeys ----------------------------------------------------------
 
@@ -111,7 +140,7 @@ class MainWindow(QMainWindow):
                 alt=binding.get("alt", False),
             )
         for panel in self.panels.values():
-            panel._update_record_label()
+            panel._update_hotkey_labels()
 
     def _poll_hotkeys(self):
         while True:
@@ -133,10 +162,9 @@ class MainWindow(QMainWindow):
                     panel.start()
                     break
         elif action == "start_record":
-            for panel in ordered:
-                if not panel.running and not panel.is_recording:
-                    panel.start_recording()
-                    break
+            new_panel = self.add_panel()
+            if new_panel is not None:
+                new_panel.start_recording()
         elif action == "stop_record":
             for panel in ordered:
                 if panel.is_recording:
@@ -152,5 +180,6 @@ class MainWindow(QMainWindow):
                 return
         for panel in self.panels.values():
             panel.stop()
+            panel.cancel_recording()
         self.hotkey_manager.stop()
         event.accept()

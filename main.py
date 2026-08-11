@@ -8,7 +8,8 @@ Block-based keyboard & mouse automation tool for Windows.
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtWidgets import QApplication
 
 from keymimic3.config.paths import PROFILES_DIR
@@ -27,14 +28,25 @@ def _resource_path(relative_path: str) -> Path:
 def main():
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Qt6 enables high-DPI scaling by default, but at fractional scale factors
+    # (125%/150%, common on Windows laptops) it rounds to the nearest integer
+    # unless told otherwise - PassThrough uses the exact factor instead, so
+    # text and layout don't come out slightly blurry/mis-sized.
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+
     app = QApplication(sys.argv)
     app.setApplicationName("KeyMimic v3")
 
     icon_path = _resource_path("assets/icon.ico")
-    if icon_path.exists():
-        app.setWindowIcon(QIcon(str(icon_path)))
+    icon = QIcon(str(icon_path)) if icon_path.exists() else None
+    if icon:
+        app.setWindowIcon(icon)
 
     window = MainWindow()
+    if icon:
+        window.setWindowIcon(icon)
     window.show()
 
     sys.exit(app.exec())

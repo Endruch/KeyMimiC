@@ -12,13 +12,12 @@ here "dumb": no widget tries to patch itself in place, which sidesteps a
 whole class of stale-index/partial-update bugs.
 """
 
-from PySide6.QtCore import Qt, QMimeData, QPoint, QTimer
+from PySide6.QtCore import Qt, QMimeData
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (
-    QFrame, QLabel, QPushButton, QCheckBox, QSpinBox, QLineEdit,
+    QFrame, QLabel, QPushButton, QSpinBox,
     QPlainTextEdit, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QAbstractItemView, QColorDialog, QMessageBox, QWidget, QStackedWidget,
-    QSizePolicy,
 )
 
 from ..model import Block, Step
@@ -30,6 +29,14 @@ BLOCK_MIME = "application/x-keymimic-block"
 STEP_MIME = "application/x-keymimic-step"
 
 KIND_TITLES = {"block": "Block", "repeat": "Repeat", "mouse_path": "Mouse Path"}
+
+
+def _collect_descendant_lists(block: Block):
+    """Yield every children-list reachable inside `block` (repeat blocks only)."""
+    if block.kind == "repeat":
+        yield block.children
+        for child in block.children:
+            yield from _collect_descendant_lists(child)
 
 
 # ---------------------------------------------------------------------------
@@ -48,10 +55,11 @@ class StepRowWidget(QFrame):
         self.step_list = step_list  # the owning StepListWidget (for drag)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(3, 1, 3, 1)
+        layout.setSpacing(4)
 
         handle = QLabel("::")
-        handle.setFixedWidth(16)
+        handle.setFixedWidth(12)
         handle.setStyleSheet(f"color: {styles.TEXT_MUTED};")
         handle.setCursor(Qt.SizeAllCursor)
         handle.mousePressEvent = self._handle_press
@@ -60,16 +68,16 @@ class StepRowWidget(QFrame):
         layout.addWidget(handle)
 
         text = QLabel(step.to_text())
-        text.setStyleSheet("font-family: Consolas, monospace;")
+        text.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
         layout.addWidget(text, stretch=1)
 
         edit_btn = QPushButton("Edit")
-        edit_btn.setFixedWidth(50)
+        edit_btn.setFixedWidth(38)
         edit_btn.clicked.connect(self._on_edit)
         layout.addWidget(edit_btn)
 
         remove_btn = QPushButton("-")
-        remove_btn.setFixedWidth(28)
+        remove_btn.setFixedWidth(22)
         remove_btn.clicked.connect(self._on_remove)
         layout.addWidget(remove_btn)
 
@@ -179,14 +187,15 @@ class BlockCardWidget(QFrame):
         self._selected = False
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 6, 6, 6)
-        outer.setSpacing(6)
+        outer.setContentsMargins(5, 3, 5, 3)
+        outer.setSpacing(3)
 
         outer.addLayout(self._build_header())
 
         self.body_container = QWidget()
         self.body_layout = QVBoxLayout(self.body_container)
-        self.body_layout.setContentsMargins(20, 0, 0, 0)
+        self.body_layout.setContentsMargins(15, 2, 0, 0)
+        self.body_layout.setSpacing(3)
         outer.addWidget(self.body_container)
         self._build_body()
 
@@ -198,9 +207,10 @@ class BlockCardWidget(QFrame):
 
     def _build_header(self):
         row = QHBoxLayout()
+        row.setSpacing(3)
 
         handle = QLabel("::")
-        handle.setFixedWidth(16)
+        handle.setFixedWidth(12)
         handle.setCursor(Qt.SizeAllCursor)
         handle.setStyleSheet(f"color: {styles.TEXT_MUTED};")
         handle.mousePressEvent = self._handle_press
@@ -208,25 +218,26 @@ class BlockCardWidget(QFrame):
         self._drag_start_pos = None
         row.addWidget(handle)
 
-        self.enabled_check = QCheckBox()
-        self.enabled_check.setChecked(self.block.enabled)
-        self.enabled_check.setToolTip("Enable/disable this block")
-        self.enabled_check.toggled.connect(self._on_toggle_enabled)
-        row.addWidget(self.enabled_check)
+        self.enabled_btn = QPushButton()
+        self.enabled_btn.setFixedWidth(30)
+        self.enabled_btn.setToolTip("Enable/disable this block")
+        self.enabled_btn.clicked.connect(self._on_toggle_enabled)
+        self._update_enabled_btn()
+        row.addWidget(self.enabled_btn)
 
         self.collapse_btn = QPushButton("v" if not self.block.collapsed else ">")
-        self.collapse_btn.setFixedWidth(24)
+        self.collapse_btn.setFixedWidth(20)
         self.collapse_btn.clicked.connect(self._on_toggle_collapsed)
         row.addWidget(self.collapse_btn)
 
         self.color_btn = QPushButton()
-        self.color_btn.setFixedSize(18, 18)
+        self.color_btn.setFixedSize(15, 15)
         self.color_btn.setToolTip("Pick a custom color")
         self.color_btn.clicked.connect(self._on_pick_color)
         row.addWidget(self.color_btn)
 
         auto_color_btn = QPushButton("A")
-        auto_color_btn.setFixedSize(18, 18)
+        auto_color_btn.setFixedSize(15, 15)
         auto_color_btn.setToolTip("Reset to automatic color")
         auto_color_btn.clicked.connect(self._on_auto_color)
         row.addWidget(auto_color_btn)
@@ -246,19 +257,23 @@ class BlockCardWidget(QFrame):
 
         delete_btn = QPushButton("x")
         delete_btn.setObjectName("DangerButton")
-        delete_btn.setFixedWidth(28)
+        delete_btn.setFixedWidth(22)
         delete_btn.setToolTip("Delete this block")
         delete_btn.clicked.connect(self._on_delete)
         row.addWidget(delete_btn)
 
-        for w in (self.enabled_check, self.collapse_btn, self.color_btn, auto_color_btn,
+        for w in (self.enabled_btn, self.collapse_btn, self.color_btn, auto_color_btn,
                   dup_btn, delete_btn):
             w.setEnabled(not self.panel.is_locked())
 
         return row
 
-    def _on_toggle_enabled(self, checked):
-        self.block.enabled = checked
+    def _update_enabled_btn(self):
+        self.enabled_btn.setText("ON" if self.block.enabled else "OFF")
+        self.enabled_btn.setStyleSheet(styles.toggle_button_stylesheet(self.block.enabled))
+
+    def _on_toggle_enabled(self):
+        self.block.enabled = not self.block.enabled
         self.panel.notify_change()
 
     def _on_toggle_collapsed(self):
@@ -299,7 +314,7 @@ class BlockCardWidget(QFrame):
         drag = QDrag(self)
         mime = QMimeData()
         mime.setData(BLOCK_MIME, self.block.id.encode())
-        mime.setProperty("source_blocks_id", id(self.owner_list.blocks_ref))
+        mime.setProperty("source_widget", self.owner_list)
         drag.setMimeData(mime)
         drag.exec(Qt.MoveAction)
         self._drag_start_pos = None
@@ -507,25 +522,94 @@ class BlockListWidget(QListWidget):
                 item.setSizeHint(card.sizeHint())
                 break
 
+    def peek_block(self, block_id):
+        """Find a block by id without removing it."""
+        return next((b for b in self.blocks_ref if b.id == block_id), None)
+
+    def take_block(self, block_id):
+        """Find and remove a block by id, returning it (or None if not found)."""
+        for i, b in enumerate(self.blocks_ref):
+            if b.id == block_id:
+                return self.blocks_ref.pop(i)
+        return None
+
     # -- drag & drop --------------------------------------------------------
+    #
+    # Blocks can be dropped into ANY BlockListWidget - the same list (reorder),
+    # a different nesting level within the same panel (e.g. root <-> inside a
+    # Repeat), or a list belonging to a completely different open ThreadPanel.
+    # The dragged block's identity is carried via a direct object reference to
+    # its source BlockListWidget (QMimeData.setProperty), which only works for
+    # in-process drags - fine here, dragging out of the app isn't a thing.
 
     def dragEnterEvent(self, event):
-        if event.mimeData().hasFormat(BLOCK_MIME):
+        if event.mimeData().hasFormat(BLOCK_MIME) and not self.panel.is_locked():
             event.acceptProposedAction()
+            self._set_drop_highlight(True)
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasFormat(BLOCK_MIME):
+        if event.mimeData().hasFormat(BLOCK_MIME) and not self.panel.is_locked():
             event.acceptProposedAction()
 
+    def dragLeaveEvent(self, event):
+        self._set_drop_highlight(False)
+
+    def _set_drop_highlight(self, active):
+        if active:
+            self.setStyleSheet(
+                f"QListWidget {{ border: 2px dashed {styles.DROP_TARGET_BORDER}; border-radius: 6px; }}"
+            )
+        else:
+            self.setStyleSheet("")
+
     def dropEvent(self, event):
+        self._set_drop_highlight(False)
+        if self.panel.is_locked():
+            event.ignore()
+            return
+
         mime = event.mimeData()
         if not mime.hasFormat(BLOCK_MIME):
             return
-        if mime.property("source_blocks_id") != id(self.blocks_ref):
-            event.ignore()  # cross-list moves aren't supported in v1
+        source_widget = mime.property("source_widget")
+        if source_widget is None:
+            event.ignore()
+            return
+        block_id = bytes(mime.data(BLOCK_MIME)).decode()
+
+        if source_widget is self:
+            self._reorder_within(block_id, event)
             return
 
-        block_id = bytes(mime.data(BLOCK_MIME)).decode()
+        if source_widget.panel.is_locked():
+            event.ignore()
+            return
+
+        dragged = source_widget.peek_block(block_id)
+        if dragged is None:
+            event.ignore()
+            return
+        if any(lst is self.blocks_ref for lst in _collect_descendant_lists(dragged)):
+            # Can't drop a Repeat block inside its own (possibly nested) children.
+            event.ignore()
+            return
+
+        block = source_widget.take_block(block_id)
+        if block is None:
+            event.ignore()
+            return
+
+        target_item = self.itemAt(event.position().toPoint())
+        new_index = self.row(target_item) if target_item else len(self.blocks_ref)
+        new_index = max(0, min(new_index, len(self.blocks_ref)))
+        self.blocks_ref.insert(new_index, block)
+        event.acceptProposedAction()
+
+        source_widget.panel.notify_change()
+        if self.panel is not source_widget.panel:
+            self.panel.notify_change()
+
+    def _reorder_within(self, block_id, event):
         old_index = next((i for i, b in enumerate(self.blocks_ref) if b.id == block_id), None)
         if old_index is None:
             event.ignore()

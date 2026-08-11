@@ -12,12 +12,13 @@ here "dumb": no widget tries to patch itself in place, which sidesteps a
 whole class of stale-index/partial-update bugs.
 """
 
-from PySide6.QtCore import Qt, QMimeData
-from PySide6.QtGui import QDrag
+from PySide6.QtCore import Qt, QMimeData, QSize
+from PySide6.QtGui import QDrag, QPainter, QPen, QColor
 from PySide6.QtWidgets import (
     QFrame, QLabel, QPushButton, QSpinBox,
     QPlainTextEdit, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QAbstractItemView, QColorDialog, QMessageBox, QWidget, QStackedWidget,
+    QSizePolicy,
 )
 
 from ..model import Block, Step
@@ -37,6 +38,125 @@ def _collect_descendant_lists(block: Block):
         yield block.children
         for child in block.children:
             yield from _collect_descendant_lists(child)
+
+
+class _CurrentPageStack(QStackedWidget):
+    """
+    A QStackedWidget whose size hint reflects only the *currently visible*
+    page, not the tallest of all its pages (Qt's default). Without this, a
+    block card showing a single short step would still be stretched to the
+    height of the (hidden) text-editor page.
+    """
+
+    def sizeHint(self):
+        current = self.currentWidget()
+        return current.sizeHint() if current else super().sizeHint()
+
+    def minimumSizeHint(self):
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current else super().minimumSizeHint()
+
+
+# ---------------------------------------------------------------------------
+# Timeline: keyboard blocks on the left of a vertical spine, mouse blocks on
+# the right, Repeat blocks spanning full width over the spine. Purely a
+# rendering concern - execution order is still the flat, top-to-bottom
+# blocks_ref list; this only changes which item widget goes into each row.
+# ---------------------------------------------------------------------------
+
+SPINE_WIDTH = 46
+_PIXELS_PER_SECOND = 15
+_MAX_DURATION_EXTRA_PX = 260
+
+
+class _SpineSegment(QWidget):
+    """One row's slice of the vertical timeline: line + tick + optional time label."""
+
+    def __init__(self, elapsed_before: float, show_label: bool, parent=None):
+        super().__init__(parent)
+        self.elapsed_before = elapsed_before
+        self.show_label = show_label
+        self.setFixedWidth(SPINE_WIDTH)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        center_x = SPINE_WIDTH // 2
+
+        pen = QPen(QColor(styles.SPINE_COLOR))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.drawLine(center_x, 0, center_x, self.height())
+
+        tick_pen = QPen(QColor(styles.SPINE_TICK_COLOR))
+        tick_pen.setWidth(2)
+        painter.setPen(tick_pen)
+        painter.drawLine(center_x - 5, 0, center_x + 5, 0)
+
+        if self.show_label:
+            painter.setPen(QColor(styles.SPINE_LABEL_COLOR))
+            font = painter.font()
+            font.setPointSize(8)
+            painter.setFont(font)
+            painter.drawText(0, 2, SPINE_WIDTH, 14, Qt.AlignHCenter, f"{self.elapsed_before:.1f}s")
+        painter.end()
+
+
+class TimelineRowWidget(QWidget):
+    """
+    One row of the block timeline: a BlockCardWidget placed left (keyboard),
+    right (mouse), or full-width over the spine (Repeat), plus that row's
+    slice of the vertical spine line. Card height is topped up to roughly
+    reflect the block's estimated duration (with a floor at its natural
+    content height, so short actions stay readable).
+    """
+
+    def __init__(self, block: Block, owner_list, panel, elapsed_before: float,
+                 show_label: bool, parent=None):
+        super().__init__(parent)
+        self.card = BlockCardWidget(block, owner_list, panel)
+        natural_height = max(self.card.sizeHint().height(), 28)
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 3, 0, 3)
+        outer.setSpacing(0)
+
+        if block.column == "center":
+            outer.addWidget(self.card, stretch=1)
+            self._target_height = natural_height
+            self.setMinimumHeight(self._target_height)
+            return
+
+        extra = min(block.estimated_duration() * _PIXELS_PER_SECOND, _MAX_DURATION_EXTRA_PX)
+        self._target_height = int(natural_height + extra)
+        self.setMinimumHeight(self._target_height)
+
+        spine = _SpineSegment(elapsed_before, show_label)
+
+        left_slot = QWidget()
+        left_layout = QHBoxLayout(left_slot)
+        left_layout.setContentsMargins(0, 0, 6, 0)
+        left_layout.setAlignment(Qt.AlignTop | Qt.AlignRight)
+
+        right_slot = QWidget()
+        right_layout = QHBoxLayout(right_slot)
+        right_layout.setContentsMargins(6, 0, 0, 0)
+        right_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+
+        if block.column == "keyboard":
+            left_layout.addWidget(self.card)
+        else:
+            right_layout.addWidget(self.card)
+
+        outer.addWidget(left_slot, stretch=1)
+        outer.addWidget(spine)
+        outer.addWidget(right_slot, stretch=1)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(hint.width(), max(hint.height(), self._target_height))
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +242,11 @@ class StepListWidget(QListWidget):
         self.setAcceptDrops(True)
         self.setSelectionMode(QAbstractItemView.NoSelection)
         self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        # This list only ever grows to fit its content (see _render's
+        # setFixedHeight) - scrolling is handled once, by ThreadPanel's outer
+        # QScrollArea, so this must never show its own scrollbar too.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSpacing(1)
         self._render()
 
@@ -330,7 +455,7 @@ class BlockCardWidget(QFrame):
             self._build_mouse_path_body()
 
     def _build_plain_block_body(self):
-        self.body_stack = QStackedWidget()
+        self.body_stack = _CurrentPageStack()
         self.body_layout.addWidget(self.body_stack)
 
         # Page 0: step rows + add button
@@ -379,7 +504,17 @@ class BlockCardWidget(QFrame):
         self.body_stack.addWidget(text_page)
 
     def _on_add_step(self):
-        dlg = ActionPickerDialog(self.window())
+        # An empty block hasn't picked a side yet - any type is fine for its
+        # first step. Once it has content, further steps must match its
+        # column so a block never ends up mixing keyboard and mouse actions.
+        if self.block.steps:
+            allowed = {
+                "keyboard": ("keyboard", "sleep", "log", "wait_with_keys"),
+                "mouse": ("mouse", "sleep", "log"),
+            }.get(self.block.column)
+        else:
+            allowed = None
+        dlg = ActionPickerDialog(self.window(), allowed_types=allowed)
         if dlg.exec() and dlg.result_step is not None:
             self.block.steps.append(dlg.result_step)
             self.panel.notify_change()
@@ -488,28 +623,36 @@ class BlockListWidget(QListWidget):
         self.setAcceptDrops(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        # Same reasoning as StepListWidget - this list (and any nested one
+        # inside a Repeat card) always grows to fit its content; only
+        # ThreadPanel's single outer QScrollArea should ever show a scrollbar.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setSpacing(4)
         self.itemSelectionChanged.connect(self._sync_selection_visuals)
         self._render()
 
     def _render(self):
         self.clear()
-        for block in self.blocks_ref:
+        elapsed = 0.0
+        for i, block in enumerate(self.blocks_ref):
             item = QListWidgetItem()
             item.setData(Qt.UserRole, block.id)
-            card = BlockCardWidget(block, self, self.panel)
-            item.setSizeHint(card.sizeHint())
+            show_label = (i % 4 == 0)
+            row = TimelineRowWidget(block, self, self.panel, elapsed, show_label)
+            item.setSizeHint(row.sizeHint())
             self.addItem(item)
-            self.setItemWidget(item, card)
+            self.setItemWidget(item, row)
+            elapsed += block.estimated_duration()
         total_height = sum(self.sizeHintForRow(i) for i in range(self.count())) + 8
         self.setMinimumHeight(min(total_height, 4000))
 
     def _sync_selection_visuals(self):
         for i in range(self.count()):
             item = self.item(i)
-            card = self.itemWidget(item)
-            if card:
-                card.set_selected(item.isSelected())
+            row = self.itemWidget(item)
+            if row:
+                row.card.set_selected(item.isSelected())
 
     def selected_block_ids(self):
         return [self.item(i).data(Qt.UserRole) for i in range(self.count()) if self.item(i).isSelected()]
@@ -518,8 +661,9 @@ class BlockListWidget(QListWidget):
         """Re-measure the item hosting `card` (its content size changed in place)."""
         for i in range(self.count()):
             item = self.item(i)
-            if self.itemWidget(item) is card:
-                item.setSizeHint(card.sizeHint())
+            row = self.itemWidget(item)
+            if row and row.card is card:
+                item.setSizeHint(row.sizeHint())
                 break
 
     def peek_block(self, block_id):

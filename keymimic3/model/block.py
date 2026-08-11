@@ -149,6 +149,7 @@ class MousePathPoint:
     dx: int
     dy: int
     dt: float = 0.0
+    kind: str = "move"  # "move" | "click" | "right_click" - dx/dy are 0 and unused for clicks
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -257,13 +258,57 @@ class Block:
         best = max(counts, key=lambda k: counts[k])
         return best if counts[best] > 0 else "empty"
 
+    @property
+    def column(self) -> str:
+        """
+        Which side of the timeline this block belongs on: "keyboard" (left),
+        "mouse" (right), or "center" (Repeat - spans both, drawn over the
+        spine, with its own nested timeline for its children).
+
+        A "block" is keyboard unless it contains at least one mouse step -
+        this also covers sleep/log-only (and empty) blocks, which default to
+        the keyboard side since they aren't tied to either device.
+        """
+        if self.kind == "repeat":
+            return "center"
+        if self.kind == "mouse_path":
+            return "mouse"
+        if any(step.type in _MOUSE_STEPS for step in self.steps):
+            return "mouse"
+        return "keyboard"
+
+    def estimated_duration(self) -> float:
+        """
+        Rough total seconds this block takes to run, used to size its card
+        on the timeline. Only counts explicit waits (sleep, a press's hold
+        duration, wait_with_keys) - instantaneous actions like a single
+        press/click/move don't meaningfully add to it.
+        """
+        if self.kind == "mouse_path":
+            return sum(p.dt for p in self.points)
+        if self.kind == "repeat":
+            inner = sum(child.estimated_duration() for child in self.children)
+            return inner * max(self.count, 1)
+        total = 0.0
+        for step in self.steps:
+            if step.type == "sleep":
+                total += step.duration or 0.0
+            elif step.type == "press" and step.duration:
+                total += step.duration
+            elif step.type == "wait_with_keys":
+                total += step.duration or 0.0
+        return total
+
     def summary(self) -> str:
         """Short one-line description shown on a collapsed card."""
         if self.kind == "repeat":
             return f"Repeat x{self.count} ({len(self.children)} block(s))"
         if self.kind == "mouse_path":
             total_dt = sum(p.dt for p in self.points)
-            return f"Mouse Path: {len(self.points)} point(s), {total_dt:.1f}s"
+            moves = sum(1 for p in self.points if p.kind == "move")
+            clicks = len(self.points) - moves
+            click_part = f", {clicks} click(s)" if clicks else ""
+            return f"Mouse Path: {moves} move(s){click_part}, {total_dt:.1f}s"
         if not self.steps:
             return "Empty block"
         return " / ".join(s.to_text() for s in self.steps[:3]) + (

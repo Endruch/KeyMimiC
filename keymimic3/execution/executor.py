@@ -106,7 +106,12 @@ class ScriptExecutor(threading.Thread):
                 self._sleep(point.dt)
                 if self._stop_event.is_set():
                     return
-            send_mouse_move(point.dx, point.dy)
+            if point.kind == "click":
+                self._click("left")
+            elif point.kind == "right_click":
+                self._click("right")
+            else:
+                send_mouse_move(point.dx, point.dy)
 
     # -- step execution ---------------------------------------------------
 
@@ -120,9 +125,9 @@ class ScriptExecutor(threading.Thread):
         elif t == "release":
             self._release(step.key)
         elif t == "click":
-            send_mouse_click(button="left")
+            self._click("left")
         elif t == "right_click":
-            send_mouse_click(button="right")
+            self._click("right")
         elif t == "move":
             send_mouse_move(step.dx, step.dy)
         elif t == "move_to":
@@ -135,6 +140,14 @@ class ScriptExecutor(threading.Thread):
             self._wait_with_keys(step.duration, step.taps or [])
         else:
             self._log(f"Unknown step type: {t}")
+
+    def _click(self, button):
+        down_result, up_result = send_mouse_click(button=button)
+        if down_result == 0 or up_result == 0:
+            self._log(
+                f"WARNING: SendInput blocked for {button} click - the target window may be "
+                f"running with higher privileges (try running KeyMimic as Administrator)"
+            )
 
     def _press(self, key):
         try:

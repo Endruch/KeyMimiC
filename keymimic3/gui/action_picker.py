@@ -7,7 +7,6 @@ it replaces both the old standalone Help dialog and the old Visual Keyboard
 Editor from v2.0.
 """
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QStackedWidget, QWidget, QLabel,
     QPushButton, QRadioButton, QButtonGroup, QDoubleSpinBox, QSpinBox,
@@ -15,7 +14,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QMessageBox,
 )
 
-from ..core.key_names import resolve_key, get_key_display_name
+from ..core.key_names import resolve_key
 from ..model import Step
 from .keyboard_picker import KeyboardPickerWidget
 
@@ -32,11 +31,15 @@ TYPE_LABELS = {
 class ActionPickerDialog(QDialog):
     """Modal dialog that returns a `Step` in `self.result_step` if accepted."""
 
-    def __init__(self, parent=None, initial_step: Step = None):
+    def __init__(self, parent=None, initial_step: Step = None, allowed_types=None):
         super().__init__(parent)
         self.setWindowTitle("Add Action" if initial_step is None else "Edit Action")
         self.setMinimumWidth(520)
         self.result_step = None
+        # Which top-level types are selectable, e.g. {"mouse", "sleep", "log"}
+        # for a step being added to an already-mouse block, so a block can't
+        # end up mixing keyboard and mouse content. None = no restriction.
+        self.allowed_types = list(allowed_types) if allowed_types else list(TYPE_PAGES)
 
         self._build_ui()
         if initial_step is not None:
@@ -49,7 +52,8 @@ class ActionPickerDialog(QDialog):
 
         self.type_selector = QComboBox()
         for key in TYPE_PAGES:
-            self.type_selector.addItem(TYPE_LABELS[key], key)
+            if key in self.allowed_types:
+                self.type_selector.addItem(TYPE_LABELS[key], key)
         self.type_selector.currentIndexChanged.connect(self._on_type_changed)
         root.addWidget(QLabel("Action type:"))
         root.addWidget(self.type_selector)
@@ -66,6 +70,10 @@ class ActionPickerDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+        # Make sure the stack matches whichever item ended up selected by
+        # default - don't rely on currentIndexChanged having fired already.
+        self._on_type_changed(self.type_selector.currentIndex())
 
     def _build_keyboard_page(self) -> QWidget:
         page = QWidget()
@@ -228,17 +236,21 @@ class ActionPickerDialog(QDialog):
 
     # -- state ----------------------------------------------------------------
 
-    def _on_type_changed(self, index):
-        self.stack.setCurrentIndex(index)
+    def _on_type_changed(self, combo_index):
+        key = self.type_selector.itemData(combo_index)
+        if key is not None:
+            self.stack.setCurrentIndex(TYPE_PAGES.index(key))
 
     def _load_step(self, step: Step):
-        type_index = {
-            "press": 0, "release": 0,
-            "click": 1, "right_click": 1, "move": 1, "move_to": 1,
-            "sleep": 2, "log": 3, "wait_with_keys": 4,
-        }.get(step.type, 0)
-        self.type_selector.setCurrentIndex(type_index)
-        self.stack.setCurrentIndex(type_index)
+        type_key = {
+            "press": "keyboard", "release": "keyboard",
+            "click": "mouse", "right_click": "mouse", "move": "mouse", "move_to": "mouse",
+            "sleep": "sleep", "log": "log", "wait_with_keys": "wait_with_keys",
+        }.get(step.type, "keyboard")
+        combo_index = self.type_selector.findData(type_key)
+        if combo_index >= 0:
+            self.type_selector.setCurrentIndex(combo_index)
+        self.stack.setCurrentIndex(TYPE_PAGES.index(type_key))
 
         if step.type in ("press", "release"):
             (self.press_radio if step.type == "press" else self.release_radio).setChecked(True)

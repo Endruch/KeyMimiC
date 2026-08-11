@@ -1,6 +1,6 @@
 """
-One independent macro thread: profile selector, block editor, run controls
-and its own log. Up to 4 of these live side by side in the MainWindow.
+The macro editor: profile selector, block editor, run controls and log for
+the single thread the app runs (see MainWindow).
 """
 
 from datetime import datetime
@@ -21,24 +21,15 @@ from .settings_dialog import SettingsDialog
 
 
 class ThreadPanel(QFrame):
-    """A single independent macro thread panel."""
+    """The (single) macro thread panel."""
 
-    def __init__(self, panel_id, on_close, hotkey_config, on_hotkeys_changed=None,
-                 clipboard=None, on_before_record=None, parent=None):
+    def __init__(self, panel_id, hotkey_config, on_hotkeys_changed=None, parent=None):
         super().__init__(parent)
         self.setObjectName("ThreadPanel")
         self.panel_id = panel_id
-        self.on_close = on_close
         self.hotkey_config = hotkey_config
         self.on_hotkeys_changed = on_hotkeys_changed
-        # Called right before recording starts - MainWindow uses it to stop
-        # every currently running script across all panels (so another
-        # thread's own injected keystrokes can't visually interfere, and so
-        # nothing keeps moving the mouse/pressing keys while you're recording).
-        self.on_before_record = on_before_record
-        # Shared across every open ThreadPanel (same list object, passed in by
-        # MainWindow) so Copy in one thread and Paste in another just works.
-        self.clipboard = clipboard if clipboard is not None else []
+        self.clipboard = []
 
         self.profile_manager = ProfileManager(panel_id)
         self.current_profile = self.profile_manager.get_profile_names()[0]
@@ -85,16 +76,10 @@ class ThreadPanel(QFrame):
         root = QVBoxLayout(self)
 
         header = QHBoxLayout()
-        header.addWidget(QLabel(f"<b>Thread {self.panel_id}</b>"))
         self.unsaved_label = QLabel("")
         self.unsaved_label.setObjectName("UnsavedIndicator")
         header.addWidget(self.unsaved_label)
         header.addStretch()
-        close_btn = QPushButton("x")
-        close_btn.setObjectName("DangerButton")
-        close_btn.setFixedWidth(28)
-        close_btn.clicked.connect(self._on_close_panel)
-        header.addWidget(close_btn)
         root.addLayout(header)
 
         profile_row = QHBoxLayout()
@@ -400,8 +385,6 @@ class ThreadPanel(QFrame):
             return
         if self.is_recording or self.running:
             return
-        if self.on_before_record:
-            self.on_before_record()
         self.is_recording = True
         self._update_hotkey_labels()
         self._update_lock_state()
@@ -532,16 +515,6 @@ class ThreadPanel(QFrame):
     def _log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_box.appendPlainText(f"[{timestamp}] {message}")
-
-    # -- closing ------------------------------------------------------------
-
-    def _on_close_panel(self):
-        self.stop()
-        self.cancel_recording()
-        if not self._confirm_discard_if_dirty():
-            return
-        if self.on_close:
-            self.on_close(self.panel_id)
 
     # -- selection helpers (multi-select bulk actions) -----------------------
 

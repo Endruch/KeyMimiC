@@ -1,13 +1,16 @@
 """
 Records keyboard and mouse input and turns it into a list of Blocks.
 
-Design (per spec): every discrete action (press/release/click/right_click)
-becomes its own block - no automatic grouping of "simultaneous" key holds,
-the user merges related blocks manually afterwards with the editor's Merge
-tool. Mouse movement is the one exception: a run of consecutive move samples
-is folded into a single "mouse_path" block (not one block per sample) so
-recording a gesture doesn't flood the block list, while still keeping every
-sampled point for accurate, smooth playback.
+Design: every keyboard press/release becomes its own block - no automatic
+grouping of "simultaneous" key holds, the user merges related blocks
+manually afterwards with the editor's Merge tool. Mouse activity works
+differently: a run of moves *and clicks* is folded into a single
+"mouse_path" block as one continuous sequence of typed points (move / click
+/ right_click), so recording a gesture-with-clicks doesn't get fragmented
+into a move block, then a click block, then another move block, and so on.
+A keyboard action is still the one thing that closes out the current mouse
+block, since execution is strictly sequential - the keyboard event has to
+occupy its own position in the list at that point in time.
 """
 
 import ctypes
@@ -259,17 +262,24 @@ class Recorder:
                 pending_delay = 0.0
                 continue
 
+            if name in ("click", "right_click"):
+                # Clicks stay part of the same continuous mouse activity as any
+                # move samples around them - only a keyboard action (below)
+                # closes out the current Mouse Path block.
+                if path_points is None:
+                    path_points = []
+                path_points.append(MousePathPoint(0, 0, round(pending_delay, 3), kind=name))
+                pending_delay = 0.0
+                continue
+
+            # Keyboard event (press/release) - ends any open mouse activity,
+            # then becomes its own block.
             flush_path()
             steps = []
             if pending_delay > MIN_RECORDED_GAP:
                 steps.append(Step(type="sleep", duration=round(pending_delay, 2)))
             pending_delay = 0.0
-
-            if name in ("press", "release"):
-                steps.append(Step(type=name, key=args[0]))
-            elif name in ("click", "right_click"):
-                steps.append(Step(type=name))
-
+            steps.append(Step(type=name, key=args[0]))
             blocks.append(Block.new_block(steps))
 
         flush_path()

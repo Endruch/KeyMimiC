@@ -188,11 +188,25 @@ class StepListWidget(QListWidget):
         for i, step in enumerate(self.block.steps):
             item = QListWidgetItem()
             row = StepRowWidget(step, i, self.block, self.panel, self)
-            item.setSizeHint(row.sizeHint())
+            # Width 0, not row.sizeHint().width() - see the equivalent
+            # comment in BlockListWidget._add_block_item; a baked-in width
+            # doesn't shrink when the window is later resized narrower.
+            item.setSizeHint(QSize(0, row.sizeHint().height()))
             self.addItem(item)
             self.setItemWidget(item, row)
         total_height = sum(self.sizeHintForRow(i) for i in range(self.count())) + 4
         self.setFixedHeight(max(total_height, 4))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # QListWidget doesn't reposition/resize existing setItemWidget()
+        # widgets on its own when the viewport gets narrower or wider - only
+        # on insert - so without this, a row stays at whatever width it had
+        # when first built and overflows past the list's edge once the
+        # window is resized. doItemsLayout() just repositions the already-
+        # built widgets, it doesn't reconstruct them - cheap regardless of
+        # row count.
+        self.doItemsLayout()
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat(STEP_MIME):
@@ -311,7 +325,15 @@ class BlockCardWidget(QFrame):
         self.body_layout.setContentsMargins(15, 2, 0, 0)
         self.body_layout.setSpacing(3)
         outer.addWidget(self.body_container)
-        self._build_body()
+        # Body construction is expensive (a StepListWidget row per step, a
+        # nested BlockListPanel for Repeat, etc.) - skip it entirely while
+        # collapsed (the default for new/recorded blocks) so a card with
+        # thousands of steps costs next to nothing until the user actually
+        # expands it. Toggling collapsed triggers a full notify_change()
+        # re-render (see _on_toggle_collapsed), which is what builds the body
+        # the first time a block is expanded.
+        if not block.collapsed:
+            self._build_body()
 
         self.body_container.setVisible(not block.collapsed)
         self._apply_style()
@@ -610,6 +632,14 @@ class BlockListWidget(QListWidget):
         total_height = sum(self.sizeHintForRow(i) for i in range(self.count())) + 8
         self.setMinimumHeight(min(total_height, 4000))
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # See the identical override in StepListWidget - without this, block
+        # cards (and Sleep ghost segments) stay at whatever width they had
+        # when first built and overflow past the list's edge once the
+        # window is resized narrower.
+        self.doItemsLayout()
+
     def _add_wait_item(self, block: Block, duration: float):
         # Tagged with the block it precedes (same id, but non-selectable) so
         # dropping on it resolves to "insert right before that block" - see
@@ -633,7 +663,13 @@ class BlockListWidget(QListWidget):
         extra = 0.0 if block.collapsed else min(
             block.active_duration() * _PIXELS_PER_SECOND, _MAX_DURATION_EXTRA_PX
         )
-        item.setSizeHint(QSize(natural.width(), int(max(natural.height(), 28) + extra)))
+        # Width intentionally left at 0, not natural.width(): a fixed width
+        # baked in at construction time doesn't shrink when the window is
+        # resized narrower afterwards (the item keeps its original width and
+        # the card visually overflows past the list's edge). 0 lets the list
+        # widget stretch the item - and the card filling it - to whatever
+        # width is actually available, same as the Sleep ghost segments below.
+        item.setSizeHint(QSize(0, int(max(natural.height(), 28) + extra)))
         self.addItem(item)
         self.setItemWidget(item, card)
 

@@ -9,9 +9,16 @@ stay correctly synchronized when played back together without needing any
 separate per-block timestamp.
 
 Design:
-- Keyboard: every press/release becomes its own block - no automatic
-  grouping of "simultaneous" key holds, the user merges related blocks
-  manually afterwards with the editor's Merge tool.
+- Keyboard: press/release events accumulate into a single block as one
+  continuous sequence of steps, the same way the mouse side already worked -
+  a new block only starts after a real pause (KEYBOARD_BLOCK_SPLIT_GAP).
+  Splitting every single key event into its own top-level block used to be
+  the default (relying on the user to Merge related ones back together
+  afterwards), but that turns a few minutes of typing into thousands of
+  top-level blocks - each needing its own real Qt widget with no
+  virtualization in the editor, which made long recordings take minutes to
+  render or even reopen. Split still works the other way if the user wants
+  a block broken back down into individual steps.
 - Mouse: moves and button down/up events accumulate into a single
   "mouse_path" block as one continuous sequence of typed points, so a
   gesture-with-clicks doesn't fragment into a move block, then a click
@@ -65,7 +72,8 @@ LLMHF_INJECTED_MASK = 0x01 | 0x02
 MOUSE_SAMPLE_INTERVAL = 0.02   # seconds between recorded mouse-move samples
 MOUSE_MOVE_THRESHOLD = 5       # minimum pixels moved to record a new sample
 MIN_RECORDED_GAP = 0.01        # ignore gaps smaller than this (event-loop noise)
-MOUSE_BLOCK_SPLIT_GAP = 1.0    # seconds of mouse inactivity that starts a new Mouse Path block
+MOUSE_BLOCK_SPLIT_GAP = 3.0    # seconds of mouse inactivity that starts a new Mouse Path block
+KEYBOARD_BLOCK_SPLIT_GAP = 3.0  # seconds of keyboard inactivity that starts a new block
 
 
 class RecorderSignals(QObject):
@@ -151,6 +159,20 @@ class Recorder:
             self.mouse_hook.stop()
             self.mouse_hook = None
 
+        return self._build_keyboard_blocks(), self._build_mouse_blocks()
+
+    def preview_blocks(self):
+        """
+        Non-destructive snapshot of the blocks recorded so far, without
+        stopping the recording - used by the GUI to show a live preview of
+        the in-progress recording. Safe to call from the GUI thread while
+        the hooks (on their own dedicated thread) keep appending to
+        self.keyboard_events/self.mouse_events: the hook thread only ever
+        appends, this only ever reads, and CPython list iteration handles a
+        list growing concurrently without corruption - worst case this
+        preview is a fraction of a second stale, which is fine for a live
+        view.
+        """
         return self._build_keyboard_blocks(), self._build_mouse_blocks()
 
     # -- hook callbacks -----------------------------------------------------
@@ -263,21 +285,42 @@ class Recorder:
         return result
 
     def _build_keyboard_blocks(self):
+        # Mirrors _build_mouse_blocks: accumulate steps into one block for as
+        # long as keyboard activity is continuous, only starting a new block
+        # after a real pause (KEYBOARD_BLOCK_SPLIT_GAP). One block per raw
+        # key event (the old behavior) turns a few minutes of typing into
+        # thousands of top-level blocks - each needing its own real Qt
+        # widget with no virtualization, which made long recordings take
+        # minutes to render or even reopen. The user still gets normal,
+        # per-key-editable content (Split can always break a block back down
+        # into individual steps), just grouped into far fewer top-level cards.
         blocks = []
         events = self._dedupe_key_repeat(self.keyboard_events)
 
         pending_delay = 0.0
+        current_steps = None  # list[Step] while a block is open, else None
+
+        def flush():
+            nonlocal current_steps
+            if current_steps:
+                blocks.append(Block.new_block(current_steps))
+            current_steps = None
+
         for name, args in events:
             if name == "sleep":
                 pending_delay += args[0]
+                if pending_delay >= KEYBOARD_BLOCK_SPLIT_GAP:
+                    flush()
                 continue
-            steps = []
-            if pending_delay > MIN_RECORDED_GAP:
-                steps.append(Step(type="sleep", duration=round(pending_delay, 2)))
-            pending_delay = 0.0
-            steps.append(Step(type=name, key=args[0]))
-            blocks.append(Block.new_block(steps))
 
+            if current_steps is None:
+                current_steps = []
+            if pending_delay > MIN_RECORDED_GAP:
+                current_steps.append(Step(type="sleep", duration=round(pending_delay, 2)))
+            pending_delay = 0.0
+            current_steps.append(Step(type=name, key=args[0]))
+
+        flush()
         return blocks
 
     def _build_mouse_blocks(self):

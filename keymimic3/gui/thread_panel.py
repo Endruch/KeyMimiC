@@ -30,6 +30,7 @@ from .settings_dialog import SettingsDialog
 
 LOG_MAX_LINES = 300
 MOUSE_POS_POLL_MS = 100
+RECORDING_PREVIEW_POLL_MS = 500
 
 
 class ThreadPanel(QFrame):
@@ -65,6 +66,9 @@ class ThreadPanel(QFrame):
         self._mouse_pos_timer = QTimer(self)
         self._mouse_pos_timer.timeout.connect(self._update_mouse_pos_label)
         self._mouse_pos_timer.start(MOUSE_POS_POLL_MS)
+
+        self._recording_preview_timer = QTimer(self)
+        self._recording_preview_timer.timeout.connect(self._refresh_blocks_area)
 
     # -- panel interface used by block_widgets.py --------------------------
 
@@ -218,14 +222,25 @@ class ThreadPanel(QFrame):
     def _refresh_blocks_area(self):
         self.block_widgets.clear()
 
+        # While actively recording, show a live preview of what's been
+        # captured so far instead of the previously-loaded profile - purely
+        # a display swap (self.script itself is untouched until Stop creates
+        # the new profile). Safe to render through the normal editable
+        # widgets: editing is already fully disabled while is_locked(), and
+        # these preview Block objects aren't tied to self.script anyway.
+        if self.is_recording and self.recorder:
+            keyboard_blocks, mouse_blocks = self.recorder.preview_blocks()
+        else:
+            keyboard_blocks, mouse_blocks = self.script.keyboard_blocks, self.script.mouse_blocks
+
         container = QWidget()
         columns = QHBoxLayout(container)
         columns.setContentsMargins(0, 0, 0, 0)
         columns.setSpacing(10)
 
         for title, blocks_ref, track in (
-            ("Keyboard", self.script.keyboard_blocks, "keyboard"),
-            ("Mouse", self.script.mouse_blocks, "mouse"),
+            ("Keyboard", keyboard_blocks, "keyboard"),
+            ("Mouse", mouse_blocks, "mouse"),
         ):
             col = QVBoxLayout()
             col.addWidget(QLabel(f"<b>{title}</b>"))
@@ -423,6 +438,7 @@ class ThreadPanel(QFrame):
         })
         self.recorder.signals.control_hotkey.connect(self._on_recorder_control_hotkey)
         self.recorder.start(record_mouse=self.hotkey_config.record_mouse)
+        self._recording_preview_timer.start(RECORDING_PREVIEW_POLL_MS)
         self._log("Recording started...")
 
     def _on_recorder_control_hotkey(self, action):
@@ -434,6 +450,7 @@ class ThreadPanel(QFrame):
         if not self.is_recording:
             return
         self.is_recording = False
+        self._recording_preview_timer.stop()
         if self.recorder:
             self.recorder.stop()
             self.recorder = None
@@ -445,6 +462,7 @@ class ThreadPanel(QFrame):
         if not self.is_recording or not self.recorder:
             return
         self.is_recording = False
+        self._recording_preview_timer.stop()
         self._update_hotkey_labels()
         self._update_lock_state()
         self._update_start_button()

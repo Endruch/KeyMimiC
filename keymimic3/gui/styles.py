@@ -120,10 +120,39 @@ QScrollArea {{
 }}
 
 QCheckBox {{
+    background: transparent;
+    spacing: 6px;
+}}
+
+QRadioButton {{
+    background: transparent;
     spacing: 6px;
 }}
 
 QTabWidget::pane {{
+    border: 1px solid {BORDER};
+}}
+
+QTableWidget {{
+    background-color: #1c1d20;
+    border: 1px solid {BORDER};
+    gridline-color: {BORDER};
+    color: {TEXT};
+}}
+QTableWidget::item {{
+    background: transparent;
+}}
+QTableWidget::item:selected {{
+    background-color: {ACCENT};
+}}
+QHeaderView::section {{
+    background-color: {PANEL_BG};
+    color: {TEXT};
+    border: 1px solid {BORDER};
+    padding: 3px;
+}}
+QTableCornerButton::section {{
+    background-color: {PANEL_BG};
     border: 1px solid {BORDER};
 }}
 """

@@ -1,7 +1,7 @@
 """Dialog to inspect/edit the individual points of a Mouse Path block."""
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTableWidget,
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
     QTableWidgetItem, QHeaderView, QDialogButtonBox, QMessageBox, QComboBox,
 )
 
@@ -27,14 +27,6 @@ class MousePathEditorDialog(QDialog):
         self.result_points = None
 
         layout = QVBoxLayout(self)
-        total_dt = sum(p.dt for p in (points or []))
-        layout.addWidget(QLabel(
-            f"{len(points or [])} point(s), {total_dt:.2f}s total. "
-            "For \"Move to\", x/y are absolute screen coordinates; for \"Move by\", "
-            "x/y are a relative dx/dy instead (recorded while a button was held "
-            "with the cursor hidden - see SPEC.md). Ignored for button events. "
-            "dt is the delay before this point fires."
-        ))
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["Type", "x", "y", "delay before (s)"])

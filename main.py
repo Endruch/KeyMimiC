@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-KeyMimic v3 - Main Entry Point
+KeyMiglic - Main Entry Point
 ================================
 Block-based keyboard & mouse automation tool for Windows.
 """
@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from keymimic3.config.paths import PROFILES_DIR
+from keymimic3.config.paths import PROFILES_DIR, migrate_old_app_data_dir
 from keymimic3.gui import MainWindow
 
 
@@ -26,6 +26,7 @@ def _resource_path(relative_path: str) -> Path:
 
 
 def main():
+    migrate_old_app_data_dir()
     PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Qt6 enables high-DPI scaling by default, but at fractional scale factors
@@ -37,7 +38,7 @@ def main():
     )
 
     app = QApplication(sys.argv)
-    app.setApplicationName("KeyMimic v3")
+    app.setApplicationName("KeyMiglic")
 
     icon_path = _resource_path("assets/icon.ico")
     icon = QIcon(str(icon_path)) if icon_path.exists() else None

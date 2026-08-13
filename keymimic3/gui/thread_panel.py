@@ -20,12 +20,12 @@ from PySide6.QtWidgets import (
     QInputDialog, QWidget,
 )
 
-from ..model import Script, Block, validate_script, ScriptValidationError
+from ..model import Script, validate_script, ScriptValidationError
 from ..managers import ProfileManager, Recorder
 from ..execution import ScriptExecutor
 from ..core.constants import IS_WINDOWS
 from ..core.input import get_mouse_position
-from .block_widgets import BlockListPanel, BlockListWidget
+from .block_widgets import BlockListPanel
 from .settings_dialog import SettingsDialog
 
 LOG_MAX_LINES = 300
@@ -154,19 +154,6 @@ class ThreadPanel(QFrame):
         toolbar2.addStretch()
         root.addLayout(toolbar2)
 
-        toolbar3 = QHBoxLayout()
-        self._bulk_buttons = []
-        for text, handler in (
-            ("Merge", self._on_merge),
-            ("Split", self._on_split),
-        ):
-            btn = QPushButton(text)
-            btn.clicked.connect(handler)
-            toolbar3.addWidget(btn)
-            self._bulk_buttons.append(btn)
-        toolbar3.addStretch()
-        root.addLayout(toolbar3)
-
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setMinimumHeight(260)
@@ -197,6 +184,9 @@ class ThreadPanel(QFrame):
         self.mouse_pos_label.setObjectName("MutedLabel")
         footer.addWidget(self.mouse_pos_label)
         footer.addStretch()
+        coffee_label = QLabel('<a href="https://buymeacoffee.com/migli">☕ Buy Migli a coffee!</a>')
+        coffee_label.setOpenExternalLinks(True)
+        footer.addWidget(coffee_label)
         root.addLayout(footer)
 
         self._update_hotkey_labels()
@@ -216,8 +206,6 @@ class ThreadPanel(QFrame):
         # Only gated by "running", not "recording" - otherwise there'd be no way
         # to click Record again to stop an in-progress recording.
         self.record_btn.setEnabled(not self.running)
-        for btn in self._bulk_buttons:
-            btn.setEnabled(not locked)
 
     def _refresh_blocks_area(self):
         self.block_widgets.clear()
@@ -602,55 +590,3 @@ class ThreadPanel(QFrame):
             cursor.movePosition(QTextCursor.Down, QTextCursor.KeepAnchor, excess)
             cursor.removeSelectedText()
             cursor.deleteChar()  # remove the now-empty line left at the top
-
-    # -- selection helpers (multi-block actions) ------------------------------
-
-    def _all_list_widgets(self):
-        return self.findChildren(BlockListWidget)
-
-    def _active_list_widget(self):
-        for lw in self._all_list_widgets():
-            if lw.selected_block_ids():
-                return lw
-        return None
-
-    def _on_merge(self):
-        lw = self._active_list_widget()
-        if not lw:
-            return
-        ids = lw.selected_block_ids()
-        if len(ids) < 2:
-            QMessageBox.information(self, "Merge", "Select at least two blocks to merge.")
-            return
-        blocks = lw.blocks_ref
-        selected = [b for b in blocks if b.id in ids]
-        if any(b.kind != "block" for b in selected):
-            QMessageBox.warning(self, "Merge", "Only plain blocks (not Repeat/Mouse Path) can be merged.")
-            return
-        merged_steps = []
-        for b in selected:
-            merged_steps.extend(b.steps)
-        first_index = min(i for i, b in enumerate(blocks) if b.id in ids)
-        blocks[:] = [b for b in blocks if b.id not in ids]
-        blocks.insert(first_index, Block.new_block(merged_steps))
-        self.notify_change()
-
-    def _on_split(self):
-        lw = self._active_list_widget()
-        if not lw:
-            return
-        ids = lw.selected_block_ids()
-        if len(ids) != 1:
-            QMessageBox.information(self, "Split", "Select exactly one block to split.")
-            return
-        blocks = lw.blocks_ref
-        index = next(i for i, b in enumerate(blocks) if b.id == ids[0])
-        block = blocks[index]
-        if block.kind != "block":
-            QMessageBox.warning(self, "Split", "Only plain blocks can be split.")
-            return
-        if not block.steps:
-            return
-        new_blocks = [Block.new_block([s]) for s in block.steps]
-        blocks[index:index + 1] = new_blocks
-        self.notify_change()

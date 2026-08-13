@@ -680,9 +680,6 @@ class BlockListWidget(QListWidget):
             if isinstance(card, BlockCardWidget):
                 card.set_selected(item.isSelected())
 
-    def selected_block_ids(self):
-        return [self.item(i).data(Qt.UserRole) for i in range(self.count()) if self.item(i).isSelected()]
-
     def sync_item_size(self, card):
         """Re-measure the item hosting `card` (its content size changed in place)."""
         for i in range(self.count()):

@@ -22,7 +22,7 @@ from . import styles
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KeyMimic v3")
+        self.setWindowTitle("KeyMiglic")
         self.resize(550, 900)
         self.setStyleSheet(styles.APP_STYLESHEET)
 

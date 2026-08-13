@@ -29,6 +29,19 @@ from ..core.input import (
     send_mouse_button_down, send_mouse_button_up,
 )
 
+# A recorded "move" point is a single absolute position sampled at record
+# time; played back naively (sleep, then one instant SendInput jump to that
+# position) it looks like a teleport rather than the smooth motion that was
+# actually made - which reads as jerky/flicky rather than one continuous
+# hold+drag, especially for a fast-moving in-game camera. Interpolating
+# fixes this, but only for gaps that plausibly represent continuous
+# real-time sampling (dense recorded points, MOUSE_SAMPLE_INTERVAL-ish) -
+# a *large* gap more likely means the mouse was genuinely still and then
+# snapped, and gliding across the whole gap would invent motion that never
+# happened.
+MOUSE_INTERPOLATION_STEP_S = 0.015
+MOUSE_INTERPOLATION_MAX_GAP_S = 0.2
+
 
 class ExecutorSignals(QObject):
     """Qt signals used to report execution progress back to the GUI thread."""
@@ -122,25 +135,54 @@ class ScriptExecutor(threading.Thread):
                 self._log(f"Error in step '{step.type}': {exc}")
 
     def _run_mouse_path(self, points):
+        last_pos = None
         for point in points:
             if self._stop_event.is_set():
                 return
-            if point.dt:
-                self._sleep(point.dt)
-                if self._stop_event.is_set():
-                    return
             if point.kind == "move":
-                send_mouse_move_absolute(point.x, point.y)
-            elif point.kind == "left_down":
-                self._mouse_down("left")
-            elif point.kind == "left_up":
-                self._mouse_up("left")
-            elif point.kind == "right_down":
-                self._mouse_down("right")
-            elif point.kind == "right_up":
-                self._mouse_up("right")
+                if point.dt and last_pos is not None and point.dt <= MOUSE_INTERPOLATION_MAX_GAP_S:
+                    if not self._glide_to(last_pos, (point.x, point.y), point.dt):
+                        return
+                else:
+                    if point.dt:
+                        self._sleep(point.dt)
+                        if self._stop_event.is_set():
+                            return
+                    send_mouse_move_absolute(point.x, point.y)
+                last_pos = (point.x, point.y)
             else:
-                self._log(f"Unknown mouse point kind: {point.kind}")
+                if point.dt:
+                    self._sleep(point.dt)
+                    if self._stop_event.is_set():
+                        return
+                if point.kind == "left_down":
+                    self._mouse_down("left")
+                elif point.kind == "left_up":
+                    self._mouse_up("left")
+                elif point.kind == "right_down":
+                    self._mouse_down("right")
+                elif point.kind == "right_up":
+                    self._mouse_up("right")
+                else:
+                    self._log(f"Unknown mouse point kind: {point.kind}")
+
+    def _glide_to(self, start, end, duration):
+        """
+        Move the cursor from `start` to `end` over `duration` seconds via a
+        series of small absolute steps instead of one instant jump. Returns
+        False if stopped mid-glide (caller should bail out immediately).
+        """
+        steps = max(1, round(duration / MOUSE_INTERPOLATION_STEP_S))
+        sx, sy = start
+        ex, ey = end
+        per_step = duration / steps
+        for i in range(1, steps + 1):
+            self._sleep(per_step)
+            if self._stop_event.is_set():
+                return False
+            t = i / steps
+            send_mouse_move_absolute(round(sx + (ex - sx) * t), round(sy + (ey - sy) * t))
+        return True
 
     # -- step execution ---------------------------------------------------
 

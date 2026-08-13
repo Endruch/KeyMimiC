@@ -184,7 +184,10 @@ class ThreadPanel(QFrame):
         self.mouse_pos_label.setObjectName("MutedLabel")
         footer.addWidget(self.mouse_pos_label)
         footer.addStretch()
-        coffee_label = QLabel('<a href="https://buymeacoffee.com/migli">☕ Buy Migli a coffee!</a>')
+        coffee_label = QLabel(
+            '<a href="https://buymeacoffee.com/migli" style="color: #facc15;">'
+            '☕ Buy Migli a coffee!</a>'
+        )
         coffee_label.setOpenExternalLinks(True)
         footer.addWidget(coffee_label)
         root.addLayout(footer)
@@ -454,13 +457,26 @@ class ThreadPanel(QFrame):
         self._update_hotkey_labels()
         self._update_lock_state()
         self._update_start_button()
+
+        # Checked before .stop() clears/consumes the recorder's raw event
+        # lists - an accidental instant Record/Stop with nothing captured
+        # would otherwise still save a profile (keyboard_blocks/mouse_blocks
+        # come back empty, or - if mouse recording was on - containing only
+        # the synthetic "Return to starting position" block), cluttering
+        # the profile list with nothing of value.
+        had_activity = bool(self.recorder.keyboard_events or self.recorder.mouse_events)
         keyboard_blocks, mouse_blocks = self.recorder.stop()
         self.recorder = None
+
+        if not had_activity:
+            self._log("Recording stopped - nothing was captured, no profile created.")
+            self._refresh_blocks_area()
+            return
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = f"Recording {timestamp}"
         new_script = Script(thread_name=name, keyboard_blocks=keyboard_blocks, mouse_blocks=mouse_blocks)
-        self.profile_manager.add_profile(name, new_script)
+        name = self.profile_manager.add_profile(name, new_script)
 
         self.profile_combo.blockSignals(True)
         self.profile_combo.clear()

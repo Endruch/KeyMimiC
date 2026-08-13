@@ -107,6 +107,10 @@ QListWidget::item:selected {{
     background: transparent;
 }}
 
+QLabel {{
+    background: transparent;
+}}
+
 QLabel#MutedLabel {{
     color: {TEXT_MUTED};
 }}

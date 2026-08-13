@@ -12,13 +12,10 @@ Design:
 - Keyboard: press/release events accumulate into a single block as one
   continuous sequence of steps, the same way the mouse side already worked -
   a new block only starts after a real pause (KEYBOARD_BLOCK_SPLIT_GAP).
-  Splitting every single key event into its own top-level block used to be
-  the default (relying on the user to Merge related ones back together
-  afterwards), but that turns a few minutes of typing into thousands of
-  top-level blocks - each needing its own real Qt widget with no
-  virtualization in the editor, which made long recordings take minutes to
-  render or even reopen. Split still works the other way if the user wants
-  a block broken back down into individual steps.
+  Recording one block per key event used to be the default, but that turns
+  a few minutes of typing into thousands of top-level blocks - each
+  needing its own real Qt widget with no virtualization in the editor,
+  which made long recordings take minutes to render or even reopen.
 - Mouse: moves and button down/up events accumulate into a single
   "mouse_path" block as one continuous sequence of typed points, so a
   gesture-with-clicks doesn't fragment into a move block, then a click

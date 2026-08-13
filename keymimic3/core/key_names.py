@@ -91,4 +91,9 @@ KEYBOARD_LAYOUT = [
     ["lctrl", "lwin", "lalt", "space", "ralt", "rwin", "menu", "rctrl"],
     ["insert", "delete", "home", "end", "pageup", "pagedown"],
     ["up", "down", "left", "right"],
+    ["numlock", "num_divide", "num_multiply", "num_minus"],
+    ["num7", "num8", "num9", "num_plus"],
+    ["num4", "num5", "num6"],
+    ["num1", "num2", "num3", "num_enter"],
+    ["num0", "num_decimal"],
 ]

@@ -276,16 +276,20 @@ class Recorder:
                 dx = current_pos[0] - self._last_mouse_pos[0]
                 dy = current_pos[1] - self._last_mouse_pos[1]
                 if (dx * dx + dy * dy) ** 0.5 >= MOUSE_MOVE_THRESHOLD:
-                    self._record_mouse_gap()
-                    # Held-button + hidden cursor is the actual signature of
-                    # "game is reading raw relative input for camera
-                    # look/aim" - an ordinary held-button drag with the
-                    # cursor still visible (e.g. dragging an inventory item)
-                    # keeps tracking absolute position normally and must
-                    # stay absolute. See MousePathPoint's docstring.
-                    if (self._left_held or self._right_held) and not is_cursor_visible():
-                        self.mouse_events.append(("move_rel", [dx, dy]))
-                    else:
+                    # Held-button + hidden cursor is the signature of "game is
+                    # reading raw relative input for camera look/aim" - the
+                    # cursor position the low-level hook sees during that time
+                    # isn't meaningful, and replaying it (whether as absolute
+                    # positions or as relative deltas - both were tried) still
+                    # looked wrong in practice. Simplest reliable fix: don't
+                    # record movement at all while this is happening - the
+                    # macro just holds the button for the real duration
+                    # without trying to fake the camera movement in between.
+                    # An ordinary held-button drag with the cursor still
+                    # visible (e.g. dragging an inventory item) is unaffected
+                    # and keeps recording absolute positions as always.
+                    if not ((self._left_held or self._right_held) and not is_cursor_visible()):
+                        self._record_mouse_gap()
                         self.mouse_events.append(("move", [current_pos[0], current_pos[1]]))
                     self._last_mouse_pos = current_pos
                     self._last_mouse_sample_time = now
@@ -317,14 +321,13 @@ class Recorder:
         # key event (the old behavior) turns a few minutes of typing into
         # thousands of top-level blocks - each needing its own real Qt
         # widget with no virtualization, which made long recordings take
-        # minutes to render or even reopen. The user still gets normal,
-        # per-key-editable content (Split can always break a block back down
-        # into individual steps), just grouped into far fewer top-level cards.
+        # minutes to render or even reopen.
         blocks = []
         events = self._dedupe_key_repeat(self.keyboard_events)
 
         pending_delay = 0.0
         current_steps = None  # list[Step] while a block is open, else None
+        held = set()  # keys currently held - see the "not held" guard below
 
         def flush():
             nonlocal current_steps
@@ -335,7 +338,14 @@ class Recorder:
         for name, args in events:
             if name == "sleep":
                 pending_delay += args[0]
-                if pending_delay >= KEYBOARD_BLOCK_SPLIT_GAP:
+                # A block should only split on a genuine pause - while a key
+                # is physically held, Windows' OS-level auto-repeat still
+                # fires a steady stream of small gaps between the (deduped)
+                # repeat events, which would otherwise accumulate past
+                # KEYBOARD_BLOCK_SPLIT_GAP and incorrectly sever the block
+                # right before its own release, even though the user never
+                # stopped holding the key.
+                if not held and pending_delay >= KEYBOARD_BLOCK_SPLIT_GAP:
                     flush()
                 continue
 
@@ -346,13 +356,22 @@ class Recorder:
             pending_delay = 0.0
             current_steps.append(Step(type=name, key=args[0]))
 
+            if name == "press":
+                held.add(args[0])
+            elif name == "release":
+                held.discard(args[0])
+
         flush()
         return blocks
 
     def _build_mouse_blocks(self):
         blocks = []
 
-        if self.record_mouse and self.start_mouse_pos:
+        # Only worth restoring the starting cursor position if the mouse
+        # actually did something during the recording - a pure-keyboard
+        # macro recorded with "Record mouse" on but zero real mouse
+        # activity shouldn't gain a surprise cursor teleport on playback.
+        if self.record_mouse and self.start_mouse_pos and self.mouse_events:
             sx, sy = self.start_mouse_pos
             start_block = Block.new_mouse_path([MousePathPoint(kind="move", x=sx, y=sy)])
             start_block.label = "Return to starting position"

@@ -1,9 +1,6 @@
 # Ignore all markdown files
 *.md
 
-# Except README.md
-!README.md
-
 # Python cache
 __pycache__/
 *.py[cod]
@@ -30,15 +27,18 @@ wheels/
 
 # Virtual environments
 venv/
+.venv/
 ENV/
 env/
 
 # IDE
+.claude/
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
+.gitignore
 
 # OS
 .DS_Store

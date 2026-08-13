@@ -98,6 +98,23 @@ def send_mouse_move_absolute(x, y):
     return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
 
 
+def send_mouse_move_relative(dx, dy):
+    """
+    Move the mouse by a relative offset. Returns events sent (0/1).
+
+    Used specifically for movement recorded while a mouse button was held
+    (see model.MousePathPoint) - many games switch to reading raw relative
+    mouse input for camera look/aim while a button is held, often confining
+    or hiding the OS cursor entirely, so an absolute move wouldn't land
+    correctly (or at all) there; a relative delta matches what the game
+    itself is reading.
+    """
+    if not IS_WINDOWS:
+        return 0
+    mi = _MouseInput(dx, dy, 0, MOUSEEVENTF_MOVE, 0, _extra_info())
+    return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
+
+
 def send_mouse_button_down(button="left"):
     """Press (and hold) a mouse button at the current cursor position. Returns events sent (0/1)."""
     if not IS_WINDOWS:
@@ -127,3 +144,39 @@ def get_mouse_position():
     pt = _POINT()
     ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
     return (pt.x, pt.y)
+
+
+def is_cursor_visible() -> bool:
+    """
+    True if the OS cursor is currently shown, False if hidden.
+
+    Used by Recorder to decide whether mouse movement should be captured as
+    an absolute position or a relative delta: many games hide the cursor
+    (and confine it, or read raw HID deltas directly) specifically while
+    reading relative mouse input for camera look/aim, e.g. holding a button
+    to aim - the cursor's absolute position during that time isn't
+    meaningful, unlike an ordinary held-button drag (e.g. dragging an item
+    in an inventory UI) where the cursor stays visible and tracked
+    normally, and absolute coordinates are correct.
+    """
+    if not IS_WINDOWS:
+        return True
+
+    class _CursorInfo(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", ctypes.c_uint32),
+            ("flags", ctypes.c_uint32),
+            ("hCursor", ctypes.c_void_p),
+            ("ptScreenPos_x", ctypes.c_long),
+            ("ptScreenPos_y", ctypes.c_long),
+        ]
+
+    CURSOR_SHOWING = 0x00000001
+    info = _CursorInfo()
+    info.cbSize = ctypes.sizeof(_CursorInfo)
+    try:
+        if not ctypes.windll.user32.GetCursorInfo(ctypes.byref(info)):
+            return True  # query failed - default to the safer/previous behavior (absolute)
+    except Exception:
+        return True
+    return bool(info.flags & CURSOR_SHOWING)

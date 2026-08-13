@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
 from ..model import MousePathPoint
 
 _KIND_LABELS = [
-    ("move", "Move to"),
+    ("move", "Move to (absolute)"),
+    ("move_rel", "Move by (relative, during a held button)"),
     ("left_down", "Left button down"),
     ("left_up", "Left button up"),
     ("right_down", "Right button down"),
@@ -29,7 +30,9 @@ class MousePathEditorDialog(QDialog):
         total_dt = sum(p.dt for p in (points or []))
         layout.addWidget(QLabel(
             f"{len(points or [])} point(s), {total_dt:.2f}s total. "
-            "x/y are absolute screen coordinates (ignored for button events); "
+            "For \"Move to\", x/y are absolute screen coordinates; for \"Move by\", "
+            "x/y are a relative dx/dy instead (recorded while a button was held "
+            "with the cursor hidden - see SPEC.md). Ignored for button events. "
             "dt is the delay before this point fires."
         ))
 

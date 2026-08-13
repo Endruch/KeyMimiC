@@ -28,7 +28,7 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Optional
 
 STEP_TYPES = ("press", "release", "sleep", "log", "wait_with_keys")
-MOUSE_POINT_KINDS = ("move", "left_down", "left_up", "right_down", "right_up")
+MOUSE_POINT_KINDS = ("move", "move_rel", "left_down", "left_up", "right_down", "right_up")
 
 BLOCK_KINDS = ("block", "repeat", "mouse_path")
 
@@ -128,17 +128,29 @@ class Step:
 @dataclass
 class MousePathPoint:
     """
-    One sample on the mouse track: either an absolute cursor position to
-    move to, or a button down/up event (fired wherever the cursor currently
-    is). Absolute coordinates (not relative deltas) are used deliberately -
-    Windows applies pointer-acceleration curves to relative SendInput
-    moves, which made played-back movement drift from where it was
-    recorded; absolute moves land exactly on the recorded pixel every time.
+    One sample on the mouse track: an absolute cursor position to move to
+    ("move"), a relative delta to move by ("move_rel"), or a button down/up
+    event (fired wherever the cursor currently is).
+
+    Absolute coordinates are used for ordinary movement - Windows applies
+    pointer-acceleration curves to relative SendInput moves, which made
+    played-back movement drift from where it was recorded; absolute moves
+    land exactly on the recorded pixel every time. But movement recorded
+    while a mouse button is held *and the OS cursor is hidden* is captured
+    as a relative delta instead ("move_rel", x/y holding dx/dy rather than
+    an absolute position): many games switch to reading raw relative mouse
+    input for camera look/aim while a button is held, hiding (and often
+    confining) the OS cursor while doing so - its absolute position during
+    that time isn't meaningful, so recording/replaying it as a delta
+    (matching what the game itself is reading) is what actually works
+    there. An ordinary held-button drag where the cursor stays visible
+    (e.g. dragging an inventory item) keeps using absolute coordinates,
+    same as always - only "held + cursor hidden" switches to deltas.
     """
 
     kind: str = "move"  # one of MOUSE_POINT_KINDS
-    x: int = 0
-    y: int = 0
+    x: int = 0  # "move": absolute x. "move_rel": dx.
+    y: int = 0  # "move": absolute y. "move_rel": dy.
     dt: float = 0.0  # delay before this point fires, relative to the previous one
 
     def to_dict(self) -> dict:
@@ -292,7 +304,7 @@ class Block:
             return f"Repeat x{self.count} ({len(self.children)} block(s))"
         if self.kind == "mouse_path":
             total_dt = sum(p.dt for p in self.points)
-            moves = sum(1 for p in self.points if p.kind == "move")
+            moves = sum(1 for p in self.points if p.kind in ("move", "move_rel"))
             clicks = len(self.points) - moves
             click_part = f", {clicks} click event(s)" if clicks else ""
             return f"Mouse Path: {moves} move(s){click_part}, {total_dt:.1f}s"

@@ -27,6 +27,16 @@ Design:
   recorded as absolute coordinates rather than relative deltas - Windows
   applies pointer-acceleration curves to relative SendInput moves, which
   made played-back movement drift from where it was recorded.
+- Movement recorded while a mouse button is held *and the OS cursor is
+  hidden* is the one exception - it's captured as relative deltas
+  ("move_rel" points) instead of absolute positions. Many games switch to
+  reading raw relative mouse input for camera look/aim while a button is
+  held, hiding (and often confining) the OS cursor while doing so - its
+  absolute position during that time isn't meaningful, so recording/
+  replaying a delta (matching what the game itself reads) is what actually
+  works there. An ordinary held-button drag where the cursor stays visible
+  (e.g. dragging an item in an inventory UI) keeps using absolute
+  coordinates as normal - only "held + cursor hidden" switches to deltas.
 """
 
 import ctypes
@@ -36,7 +46,7 @@ from PySide6.QtCore import QObject, Signal
 
 from ..core.hooks import KeyboardHook, MouseHook
 from ..core.constants import SCAN_TO_CODE, SCAN_TO_CODE_EXT, IS_WINDOWS
-from ..core.input import get_mouse_position
+from ..core.input import get_mouse_position, is_cursor_visible
 from ..model import Block, Step, MousePathPoint
 
 WM_KEYDOWN = 0x0100
@@ -97,6 +107,10 @@ class Recorder:
         self._last_mouse_pos = None
         self._last_mouse_sample_time = None
         self.start_mouse_pos = None
+        # While a button is held, movement is recorded as relative deltas
+        # instead of absolute positions - see MousePathPoint's docstring.
+        self._left_held = False
+        self._right_held = False
 
         self.signals = RecorderSignals()
         # (code, ctrl, shift, alt) -> action name ("start_record" / "stop_record").
@@ -137,6 +151,8 @@ class Recorder:
         self._last_mouse_pos = None
         self._last_mouse_sample_time = None
         self.start_mouse_pos = get_mouse_position()
+        self._left_held = False
+        self._right_held = False
 
         self.keyboard_hook = KeyboardHook(self._on_keyboard_event)
         self.keyboard_hook.start()
@@ -232,18 +248,22 @@ class Recorder:
         if wParam == WM_LBUTTONDOWN:
             self._record_mouse_gap()
             self.mouse_events.append(("left_down", []))
+            self._left_held = True
             return
         if wParam == WM_LBUTTONUP:
             self._record_mouse_gap()
             self.mouse_events.append(("left_up", []))
+            self._left_held = False
             return
         if wParam == WM_RBUTTONDOWN:
             self._record_mouse_gap()
             self.mouse_events.append(("right_down", []))
+            self._right_held = True
             return
         if wParam == WM_RBUTTONUP:
             self._record_mouse_gap()
             self.mouse_events.append(("right_up", []))
+            self._right_held = False
             return
 
         if wParam == WM_MOUSEMOVE:
@@ -257,7 +277,16 @@ class Recorder:
                 dy = current_pos[1] - self._last_mouse_pos[1]
                 if (dx * dx + dy * dy) ** 0.5 >= MOUSE_MOVE_THRESHOLD:
                     self._record_mouse_gap()
-                    self.mouse_events.append(("move", [current_pos[0], current_pos[1]]))
+                    # Held-button + hidden cursor is the actual signature of
+                    # "game is reading raw relative input for camera
+                    # look/aim" - an ordinary held-button drag with the
+                    # cursor still visible (e.g. dragging an inventory item)
+                    # keeps tracking absolute position normally and must
+                    # stay absolute. See MousePathPoint's docstring.
+                    if (self._left_held or self._right_held) and not is_cursor_visible():
+                        self.mouse_events.append(("move_rel", [dx, dy]))
+                    else:
+                        self.mouse_events.append(("move", [current_pos[0], current_pos[1]]))
                     self._last_mouse_pos = current_pos
                     self._last_mouse_sample_time = now
             else:
@@ -348,9 +377,9 @@ class Recorder:
             if path_points is None:
                 path_points = []
 
-            if name == "move":
+            if name in ("move", "move_rel"):
                 x, y = args
-                path_points.append(MousePathPoint(kind="move", x=x, y=y, dt=round(pending_delay, 3)))
+                path_points.append(MousePathPoint(kind=name, x=x, y=y, dt=round(pending_delay, 3)))
             else:
                 path_points.append(MousePathPoint(kind=name, dt=round(pending_delay, 3)))
             pending_delay = 0.0

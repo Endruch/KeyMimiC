@@ -832,7 +832,7 @@ class BlockListPanel(QWidget):
         layout.addWidget(self.list_widget)
 
         add_row = QHBoxLayout()
-        self.add_btn = QPushButton("+ Add Block" if track == "keyboard" else "+ Add Mouse Path")
+        self.add_btn = QPushButton("+ Add Keyboard Block" if track == "keyboard" else "+ Add Mouse Path")
         self.add_btn.setObjectName("PrimaryButton")
         self.add_btn.clicked.connect(self._on_add_block)
         self.add_btn.setEnabled(not panel.is_locked())

@@ -48,6 +48,7 @@ class PeerConnection:
         self._listen_sock = None
         self._send_lock = threading.Lock()
         self._generation = 0  # bumped on every disconnect/new attempt
+        self.peer_ip = None  # remote address of the current connection, if any
 
     def is_connected(self) -> bool:
         return self._sock is not None
@@ -74,7 +75,10 @@ class PeerConnection:
         threading.Thread(target=self._run_client, args=(ip, gen), daemon=True).start()
 
     def disconnect(self):
-        was_connected = self._sock is not None
+        # Also covers "still just listening, no peer yet" (Stop Server before
+        # anyone connected) - the UI needs to hear about that reverting to
+        # idle just as much as an actual established connection dropping.
+        was_active = self._sock is not None or self._listen_sock is not None
         self._bump_generation()
         if self._listen_sock is not None:
             try:
@@ -88,14 +92,15 @@ class PeerConnection:
             except OSError:
                 pass
             self._sock = None
-        if was_connected:
-            # The reader thread's own cleanup won't emit `disconnected` for
-            # this connection anymore - the generation bump above (needed to
-            # stop a *stale* background thread from ever touching state
-            # again) also suppresses its normally-legitimate final emission
-            # for *this* still-current one, so this call is the only place
-            # left that will ever notify listeners this specific connection
-            # just ended.
+            self.peer_ip = None
+        if was_active:
+            # The reader/listener thread's own cleanup won't emit
+            # `disconnected` for this attempt anymore - the generation bump
+            # above (needed to stop a *stale* background thread from ever
+            # touching state again) also suppresses its normally-legitimate
+            # final emission for *this* still-current one, so this call is
+            # the only place left that will ever notify listeners this
+            # specific connection/listen attempt just ended.
             self.signals.disconnected.emit()
 
     def send(self, msg: dict):
@@ -156,6 +161,10 @@ class PeerConnection:
 
     def _on_socket_ready(self, sock, gen):
         self._sock = sock
+        try:
+            self.peer_ip = sock.getpeername()[0]
+        except OSError:
+            self.peer_ip = None
         self.signals.connected.emit()
         buf = b""
         try:
@@ -182,4 +191,5 @@ class PeerConnection:
                 pass
             if gen == self._generation:
                 self._sock = None
+                self.peer_ip = None
                 self.signals.disconnected.emit()

@@ -169,9 +169,9 @@ class ThreadPanel(QFrame):
         self.net_start_server_btn.clicked.connect(self._on_start_server)
         net_row.addWidget(self.net_start_server_btn)
 
-        self.net_ip_label = QLabel("")
-        self.net_ip_label.setObjectName("MutedLabel")
-        net_row.addWidget(self.net_ip_label)
+        self.net_status_label = QLabel("")
+        self.net_status_label.setObjectName("MutedLabel")
+        net_row.addWidget(self.net_status_label)
 
         self.net_connect_ip_edit = QLineEdit()
         self.net_connect_ip_edit.setPlaceholderText("IP address")
@@ -189,17 +189,6 @@ class ThreadPanel(QFrame):
         net_row.addWidget(self.net_disconnect_btn)
 
         net_row.addStretch()
-
-        self.net_conn_dot = QLabel("●")
-        self.net_conn_dot.setToolTip("Not connected")
-        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(False))
-        net_row.addWidget(self.net_conn_dot)
-
-        self.net_script_dot = QLabel("●")
-        self.net_script_dot.setToolTip("No script running on the peer")
-        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(False))
-        net_row.addWidget(self.net_script_dot)
-
         root.addLayout(net_row)
 
         self.scroll_area = QScrollArea()
@@ -221,11 +210,17 @@ class ThreadPanel(QFrame):
         bottom.addStretch()
         root.addLayout(bottom)
 
-        root.addWidget(QLabel("<b>Thread Log</b>"))
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setFixedHeight(120)
+        self.log_box.setFixedHeight(140)
         root.addWidget(self.log_box)
+
+        # Peer script status is shown here rather than as a normal scrolling
+        # log entry, so it always stays the last thing visible in this area
+        # no matter how many other log lines come in afterwards.
+        self.peer_status_label = QLabel("")
+        self.peer_status_label.setVisible(False)
+        root.addWidget(self.peer_status_label)
 
         footer = QHBoxLayout()
         self.mouse_pos_label = QLabel("Mouse: -, -")
@@ -543,8 +538,10 @@ class ThreadPanel(QFrame):
     # -- LAN remote control (see SPEC.md §2) -----------------------------------
 
     def _on_start_server(self):
-        self.net_ip_label.setText(f"IP: {self.peer.local_ip()}")
+        self.net_status_label.setText(f"IP: {self.peer.local_ip()}")
+        self.net_status_label.setStyleSheet("")  # plain/muted while just listening, not connected yet
         self.peer.start_server()
+        self._set_net_ui_state("listening")
         self._log("Starting server, waiting for the other computer to connect...")
 
     def _on_connect(self):
@@ -557,28 +554,30 @@ class ThreadPanel(QFrame):
         self._log(f"Connecting to {ip}...")
 
     def _on_disconnect(self):
+        # Covers both "actually connected" (tears down the socket) and
+        # "still just listening, no peer yet" (tears down the listen socket)
+        # - PeerConnection.disconnect() handles either case the same way.
         self.peer.disconnect()
 
+    def _set_net_ui_state(self, state: str):
+        """state: 'idle' (not connected, not listening) / 'listening' (Start Server, waiting for a peer) / 'connected'."""
+        idle = state == "idle"
+        self.net_start_server_btn.setVisible(idle)
+        self.net_connect_ip_edit.setVisible(idle)
+        self.net_connect_btn.setVisible(idle)
+        self.net_status_label.setVisible(state != "idle")
+        self.net_disconnect_btn.setVisible(not idle)
+        self.net_disconnect_btn.setText("Disconnect" if state == "connected" else "Stop Server")
+
     def _on_net_connected(self):
-        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(True))
-        self.net_conn_dot.setToolTip("Connected")
-        self.net_start_server_btn.setVisible(False)
-        self.net_ip_label.setVisible(False)
-        self.net_connect_ip_edit.setVisible(False)
-        self.net_connect_btn.setVisible(False)
-        self.net_disconnect_btn.setVisible(True)
+        self.net_status_label.setText(f"Connected: {self.peer.peer_ip}")
+        self.net_status_label.setStyleSheet(f"color: {styles.REMOTE_ARMED_BG}; font-weight: 600;")
+        self._set_net_ui_state("connected")
         self._log("Connected to peer.")
 
     def _on_net_disconnected(self):
-        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(False))
-        self.net_conn_dot.setToolTip("Not connected")
-        self.net_start_server_btn.setVisible(True)
-        self.net_ip_label.setVisible(True)
-        self.net_connect_ip_edit.setVisible(True)
-        self.net_connect_btn.setVisible(True)
-        self.net_disconnect_btn.setVisible(False)
-        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(False))
-        self.net_script_dot.setToolTip("No script running on the peer")
+        self._set_net_ui_state("idle")
+        self.peer_status_label.setVisible(False)  # no peer left to report a script status for
         self._log("Disconnected from peer.")
 
     def _on_net_error(self, message):
@@ -608,8 +607,16 @@ class ThreadPanel(QFrame):
         self.scroll_area.viewport().setStyleSheet(f"background-color: {color};" if color else "")
 
     def _on_peer_script_status_changed(self, running):
-        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(running))
-        self.net_script_dot.setToolTip("Script running on the peer" if running else "No script running on the peer")
+        if not self.peer.is_connected():
+            # A status message can race a disconnect that just happened -
+            # never show stale peer info once there's no active connection.
+            return
+        ip = self.peer.peer_ip or "peer"
+        color = styles.REMOTE_ARMED_BG if running else styles.REMOTE_CONTROLLED_BG
+        text = f"Script running on {ip}" if running else f"Script stopped on {ip}"
+        self.peer_status_label.setText(text)
+        self.peer_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self.peer_status_label.setVisible(True)
 
     # -- settings -------------------------------------------------------------
 

@@ -13,15 +13,28 @@ Only one connection at a time is supported. Starting a new server/connect
 attempt (or disconnecting) invalidates any previous attempt via a
 generation counter, so a slow/stale background thread from a previous
 attempt can never clobber a newer connection.
+
+send() is always non-blocking, from any thread, including the GUI thread -
+it only ever enqueues onto _send_queue; a single dedicated sender thread
+(running for this object's whole lifetime) does the actual blocking
+sock.sendall(). This used to not be true, and RemoteControlManager calling
+peer.send() straight from a GUI-thread QTimer (arming/disarming, script
+status) would freeze the entire UI for as long as a degraded/dead network
+took to time out a blocking send - which, without TCP keepalive, can be a
+very long time. The same sender thread also sends an occasional "ping" so
+a silently-dead peer (wifi dropped, machine slept) gets noticed by the
+*reader* side within HEARTBEAT_TIMEOUT_S instead of the connection just
+sitting "connected" forever - see protocol.py.
 """
 
 import json
+import queue
 import socket
 import threading
 
 from PySide6.QtCore import QObject, Signal
 
-from .protocol import NET_PORT
+from .protocol import NET_PORT, HEARTBEAT_INTERVAL_S, HEARTBEAT_TIMEOUT_S
 
 CONNECT_TIMEOUT_S = 5.0
 
@@ -46,9 +59,11 @@ class PeerConnection:
 
         self._sock = None
         self._listen_sock = None
-        self._send_lock = threading.Lock()
         self._generation = 0  # bumped on every disconnect/new attempt
         self.peer_ip = None  # remote address of the current connection, if any
+
+        self._send_queue = queue.Queue()
+        threading.Thread(target=self._run_sender, daemon=True).start()
 
     def is_connected(self) -> bool:
         return self._sock is not None
@@ -104,17 +119,31 @@ class PeerConnection:
             self.signals.disconnected.emit()
 
     def send(self, msg: dict):
-        sock = self._sock
-        if sock is None:
-            return
-        try:
-            data = (json.dumps(msg) + "\n").encode("utf-8")
-            with self._send_lock:
-                sock.sendall(data)
-        except OSError:
-            pass  # the reader loop will notice the drop and emit `disconnected`
+        """Non-blocking from any thread - see module docstring."""
+        self._send_queue.put_nowait(msg)
 
     # -- internal ---------------------------------------------------------
+
+    def _run_sender(self):
+        """
+        The only thread that ever writes to the socket. Runs for this
+        object's whole lifetime (not tied to any one connection's
+        generation) - when nothing is connected it just drops queued
+        messages, same as the old send() did.
+        """
+        while True:
+            try:
+                msg = self._send_queue.get(timeout=HEARTBEAT_INTERVAL_S)
+            except queue.Empty:
+                msg = {"type": "ping"}
+            sock = self._sock
+            if sock is None:
+                continue
+            try:
+                data = (json.dumps(msg) + "\n").encode("utf-8")
+                sock.sendall(data)
+            except OSError:
+                pass  # the reader loop is the single source of truth for "disconnected"
 
     def _bump_generation(self) -> int:
         self._generation += 1
@@ -160,6 +189,15 @@ class PeerConnection:
         self._on_socket_ready(sock, gen)
 
     def _on_socket_ready(self, sock, gen):
+        # Bounds how long recv() can block with nothing arriving - without
+        # this, a peer that silently vanishes (wifi drop, sleep, cable
+        # pulled - no clean TCP close) would leave this side sitting
+        # "connected" forever. A healthy peer's sender thread pings often
+        # enough (see protocol.HEARTBEAT_INTERVAL_S) that this should never
+        # actually fire for a live connection - socket.timeout is a
+        # subclass of OSError, so it's caught by the same handler below as
+        # any other dead-connection error.
+        sock.settimeout(HEARTBEAT_TIMEOUT_S)
         self._sock = sock
         try:
             self.peer_ip = sock.getpeername()[0]

@@ -19,14 +19,15 @@ signal deliveries from PeerConnection's background socket threads onto the
 GUI thread that constructs it - the same reason Recorder's control_hotkey
 signal is safe to connect straight to a ThreadPanel method.
 
-Forwarded keys never call peer.send() directly from the hook callback -
-WH_KEYBOARD_LL callbacks run under a hard OS-enforced timeout (and always
-on the hook's own dedicated thread, see BaseHook), and Windows will
-silently start ignoring/unhooking a hook procedure that doesn't return
-fast, exactly the "never do I/O here" rule already called out in
-base_hook.py. The callback only pushes onto a plain queue.Queue (fast, no
-I/O) and returns immediately; a separate always-running sender thread
-drains that queue and does the actual (blocking) socket send.
+peer.send() is safe to call directly from the hook callback (or any other
+thread) - it only ever enqueues, see peer_connection.py's module
+docstring. WH_KEYBOARD_LL callbacks run under a hard OS-enforced timeout
+(and always on the hook's own dedicated thread, see BaseHook), and
+Windows will silently start ignoring/unhooking a hook procedure that
+doesn't return fast, exactly the "never do I/O here" rule already called
+out in base_hook.py - actual socket I/O for every message this class
+sends (arm/disarm/key/script_status) happens on PeerConnection's own
+dedicated sender thread, never here.
 
 This class does not own a keyboard hook itself - MainWindow owns a single
 shared one for the whole app and calls _on_keyboard_event() directly
@@ -36,9 +37,6 @@ keyboard hook installed at a time instead of a separate one per feature
 low-level hooks on the same machine were found to interfere with each
 other and broke global hotkeys - see git history.
 """
-
-import queue
-import threading
 
 from PySide6.QtCore import QObject, Signal, QTimer
 
@@ -51,7 +49,6 @@ WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
 
 CAPSLOCK_POLL_MS = 50
-SENDER_QUEUE_GET_TIMEOUT_S = 0.5  # just a periodic wake to check the shutdown flag
 
 
 class RemoteControlManager(QObject):
@@ -68,9 +65,6 @@ class RemoteControlManager(QObject):
         self.being_controlled = False
         self._last_capslock_state = False
         self._poll_timer = None
-        self._outgoing_queue = queue.Queue()
-        self._sender_thread = None
-        self._sender_running = False
 
         self.peer.disconnected.connect(self._on_peer_disconnected)
         self.peer.message.connect(self._on_peer_message)
@@ -82,29 +76,13 @@ class RemoteControlManager(QObject):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_capslock)
         self._poll_timer.start(CAPSLOCK_POLL_MS)
-        self._sender_running = True
-        self._sender_thread = threading.Thread(target=self._run_sender, daemon=True)
-        self._sender_thread.start()
 
     def stop(self):
         if self._poll_timer is not None:
             self._poll_timer.stop()
             self._poll_timer = None
-        self._sender_running = False
-        if self._sender_thread is not None and self._sender_thread.is_alive():
-            self._sender_thread.join(timeout=1.0)
-        self._sender_thread = None
         self.armed = False
         self.being_controlled = False
-
-    def _run_sender(self):
-        """Drains forwarded key events and does the actual (blocking) socket send off the hook thread."""
-        while self._sender_running:
-            try:
-                code, is_down = self._outgoing_queue.get(timeout=SENDER_QUEUE_GET_TIMEOUT_S)
-            except queue.Empty:
-                continue
-            self.peer.send({"type": "key", "key": code, "down": is_down})
 
     def notify_script_status(self, running: bool):
         """Called by ThreadPanel on every local start/stop, broadcast to the peer if connected."""
@@ -152,7 +130,7 @@ class RemoteControlManager(QObject):
             return False  # never intercepted - its own OS toggle/lamp keeps working as-is
 
         is_down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)
-        self._outgoing_queue.put_nowait((code, is_down))
+        self.peer.send({"type": "key", "key": code, "down": is_down})
         return True  # suppress locally - this machine's keyboard is "at the peer" right now
 
     # -- peer connection lifecycle --------------------------------------------

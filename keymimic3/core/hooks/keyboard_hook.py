@@ -24,6 +24,12 @@ class KeyboardHook(BaseHook):
     """
     Installs a global low-level keyboard hook and forwards every key event
     to `callback(nCode, wParam, kb_struct)`.
+
+    If the callback returns a truthy value, the event is swallowed - it is
+    not passed to the rest of the hook chain or the target application (used
+    by RemoteControlManager to suppress local keys while forwarding them to
+    a peer). Every other callback in the app returns None implicitly, which
+    keeps the previous always-pass-through behavior unchanged.
     """
 
     def __init__(self, callback):
@@ -36,7 +42,8 @@ class KeyboardHook(BaseHook):
         if nCode >= 0:
             try:
                 kb_struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                self._callback(nCode, wParam, kb_struct)
+                if self._callback(nCode, wParam, kb_struct):
+                    return 1
             except Exception:
                 pass
         return ctypes.windll.user32.CallNextHookEx(self.hook_id, nCode, wParam, lParam)

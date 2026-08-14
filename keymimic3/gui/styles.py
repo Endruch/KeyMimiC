@@ -19,6 +19,12 @@ DROP_TARGET_BORDER = "#22d3ee"    # highlight around a list while a block is dra
 ENABLED_ON_COLOR = "#16a34a"    # ON/OFF toggle button when the block is enabled
 DISABLED_OFF_COLOR = "#4b4f56"  # ON/OFF toggle button when the block is disabled
 
+DOT_ON_COLOR = "#16a34a"    # connected / peer script running
+DOT_OFF_COLOR = "#5b5f66"   # not connected / peer script stopped
+
+REMOTE_ARMED_BG = "#16a34a"        # this machine is controlling the peer
+REMOTE_CONTROLLED_BG = "#ef4444"   # this machine is being controlled by the peer
+
 BACKGROUND = "#1e1f22"
 PANEL_BG = "#26282c"
 CARD_BG = "#2f3136"
@@ -181,6 +187,12 @@ def block_card_stylesheet(color_hex: str, disabled: bool, is_current: bool, sele
         color: {text_color};
     }}
     """
+
+
+def status_dot_stylesheet(is_on: bool) -> str:
+    """Small colored circle used for the connection/peer-script status indicators."""
+    color = DOT_ON_COLOR if is_on else DOT_OFF_COLOR
+    return f"QLabel {{ color: {color}; font-size: 15px; background: transparent; }}"
 
 
 def toggle_button_stylesheet(enabled: bool) -> str:

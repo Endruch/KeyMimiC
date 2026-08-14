@@ -8,7 +8,7 @@ executor, GUI) can be imported and exercised on any OS.
 
 import ctypes
 
-from .constants import IS_WINDOWS
+from .constants import IS_WINDOWS, SCAN_CODES
 
 if IS_WINDOWS:
     PUL = ctypes.POINTER(ctypes.c_ulong)
@@ -131,6 +131,34 @@ def send_mouse_button_up(button="left"):
     flag = MOUSEEVENTF_RIGHTUP if button == "right" else MOUSEEVENTF_LEFTUP
     mi = _MouseInput(0, 0, 0, flag, 0, _extra_info())
     return _send_input(_Input(INPUT_MOUSE, _InputUnion(mi=mi)))
+
+
+VK_CAPITAL = 0x14
+
+
+def get_capslock_toggle_state() -> bool:
+    """
+    True if CapsLock is currently toggled on (lamp lit). Bit 0 of GetKeyState
+    is the toggle state, as opposed to the high bit (0x8000) which reports
+    whether the key is physically down right now - CapsLock is read this way
+    (polled) rather than via the keyboard hook, since it's never intercepted.
+    """
+    if not IS_WINDOWS:
+        return False
+    return bool(ctypes.windll.user32.GetKeyState(VK_CAPITAL) & 0x0001)
+
+
+def tap_capslock():
+    """
+    Synthesize a real CapsLock keypress (down+up), flipping its OS toggle
+    state and hardware lamp exactly like a physical press would. Used to
+    programmatically turn remote control off - see RemoteControlManager.
+    """
+    if not IS_WINDOWS:
+        return
+    scan_code, extended = SCAN_CODES["caps"]
+    send_key_down(scan_code, extended)
+    send_key_up(scan_code, extended)
 
 
 def get_mouse_position():

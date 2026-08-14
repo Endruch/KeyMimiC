@@ -17,7 +17,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QCheckBox, QSpinBox, QScrollArea, QPlainTextEdit, QMessageBox,
-    QInputDialog, QWidget,
+    QInputDialog, QWidget, QLineEdit,
 )
 
 from ..model import Script, validate_script, ScriptValidationError
@@ -27,6 +27,7 @@ from ..core.constants import IS_WINDOWS
 from ..core.input import get_mouse_position
 from .block_widgets import BlockListPanel
 from .settings_dialog import SettingsDialog
+from . import styles
 
 LOG_MAX_LINES = 300
 MOUSE_POS_POLL_MS = 100
@@ -36,11 +37,13 @@ RECORDING_PREVIEW_POLL_MS = 500
 class ThreadPanel(QFrame):
     """The (single) macro thread panel."""
 
-    def __init__(self, panel_id, hotkey_config, on_hotkeys_changed=None, parent=None):
+    def __init__(self, panel_id, hotkey_config, peer, remote_control, on_hotkeys_changed=None, parent=None):
         super().__init__(parent)
         self.setObjectName("ThreadPanel")
         self.panel_id = panel_id
         self.hotkey_config = hotkey_config
+        self.peer = peer
+        self.remote_control = remote_control
         self.on_hotkeys_changed = on_hotkeys_changed
 
         self.profile_manager = ProfileManager(panel_id)
@@ -69,6 +72,13 @@ class ThreadPanel(QFrame):
 
         self._recording_preview_timer = QTimer(self)
         self._recording_preview_timer.timeout.connect(self._refresh_blocks_area)
+
+        self.peer.connected.connect(self._on_net_connected)
+        self.peer.disconnected.connect(self._on_net_disconnected)
+        self.peer.error.connect(self._on_net_error)
+        self.remote_control.armed_changed.connect(self._on_armed_changed)
+        self.remote_control.being_controlled_changed.connect(self._on_being_controlled_changed)
+        self.remote_control.peer_script_status_changed.connect(self._on_peer_script_status_changed)
 
     # -- panel interface used by block_widgets.py --------------------------
 
@@ -153,6 +163,44 @@ class ThreadPanel(QFrame):
         toolbar2.addWidget(self.save_btn)
         toolbar2.addStretch()
         root.addLayout(toolbar2)
+
+        net_row = QHBoxLayout()
+        self.net_start_server_btn = QPushButton("Start Server")
+        self.net_start_server_btn.clicked.connect(self._on_start_server)
+        net_row.addWidget(self.net_start_server_btn)
+
+        self.net_ip_label = QLabel("")
+        self.net_ip_label.setObjectName("MutedLabel")
+        net_row.addWidget(self.net_ip_label)
+
+        self.net_connect_ip_edit = QLineEdit()
+        self.net_connect_ip_edit.setPlaceholderText("IP address")
+        self.net_connect_ip_edit.setFixedWidth(110)
+        self.net_connect_ip_edit.setText(self.hotkey_config.last_connect_ip)
+        net_row.addWidget(self.net_connect_ip_edit)
+
+        self.net_connect_btn = QPushButton("Connect")
+        self.net_connect_btn.clicked.connect(self._on_connect)
+        net_row.addWidget(self.net_connect_btn)
+
+        self.net_disconnect_btn = QPushButton("Disconnect")
+        self.net_disconnect_btn.clicked.connect(self._on_disconnect)
+        self.net_disconnect_btn.setVisible(False)
+        net_row.addWidget(self.net_disconnect_btn)
+
+        net_row.addStretch()
+
+        self.net_conn_dot = QLabel("●")
+        self.net_conn_dot.setToolTip("Not connected")
+        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(False))
+        net_row.addWidget(self.net_conn_dot)
+
+        self.net_script_dot = QLabel("●")
+        self.net_script_dot.setToolTip("No script running on the peer")
+        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(False))
+        net_row.addWidget(self.net_script_dot)
+
+        root.addLayout(net_row)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -492,6 +540,77 @@ class ThreadPanel(QFrame):
             self._load_profile(name)
         self._log(f"Recording stopped, saved as '{name}'")
 
+    # -- LAN remote control (see SPEC.md §2) -----------------------------------
+
+    def _on_start_server(self):
+        self.net_ip_label.setText(f"IP: {self.peer.local_ip()}")
+        self.peer.start_server()
+        self._log("Starting server, waiting for the other computer to connect...")
+
+    def _on_connect(self):
+        ip = self.net_connect_ip_edit.text().strip()
+        if not ip:
+            return
+        self.hotkey_config.last_connect_ip = ip
+        self.hotkey_config.save()
+        self.peer.connect_to(ip)
+        self._log(f"Connecting to {ip}...")
+
+    def _on_disconnect(self):
+        self.peer.disconnect()
+
+    def _on_net_connected(self):
+        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(True))
+        self.net_conn_dot.setToolTip("Connected")
+        self.net_start_server_btn.setVisible(False)
+        self.net_ip_label.setVisible(False)
+        self.net_connect_ip_edit.setVisible(False)
+        self.net_connect_btn.setVisible(False)
+        self.net_disconnect_btn.setVisible(True)
+        self._log("Connected to peer.")
+
+    def _on_net_disconnected(self):
+        self.net_conn_dot.setStyleSheet(styles.status_dot_stylesheet(False))
+        self.net_conn_dot.setToolTip("Not connected")
+        self.net_start_server_btn.setVisible(True)
+        self.net_ip_label.setVisible(True)
+        self.net_connect_ip_edit.setVisible(True)
+        self.net_connect_btn.setVisible(True)
+        self.net_disconnect_btn.setVisible(False)
+        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(False))
+        self.net_script_dot.setToolTip("No script running on the peer")
+        self._log("Disconnected from peer.")
+
+    def _on_net_error(self, message):
+        self._log(f"Network error: {message}")
+
+    def _on_armed_changed(self, armed):
+        self._update_remote_bg()
+        if armed:
+            self._log("Remote control: now controlling the peer's keyboard.")
+        else:
+            self._log("Remote control: stopped controlling the peer's keyboard.")
+
+    def _on_being_controlled_changed(self, controlled):
+        self._update_remote_bg()
+        if controlled:
+            self._log("Remote control: the peer is now controlling this computer.")
+        else:
+            self._log("Remote control: the peer stopped controlling this computer.")
+
+    def _update_remote_bg(self):
+        if self.remote_control.armed:
+            color = styles.REMOTE_ARMED_BG
+        elif self.remote_control.being_controlled:
+            color = styles.REMOTE_CONTROLLED_BG
+        else:
+            color = ""
+        self.scroll_area.viewport().setStyleSheet(f"background-color: {color};" if color else "")
+
+    def _on_peer_script_status_changed(self, running):
+        self.net_script_dot.setStyleSheet(styles.status_dot_stylesheet(running))
+        self.net_script_dot.setToolTip("Script running on the peer" if running else "No script running on the peer")
+
     # -- settings -------------------------------------------------------------
 
     def _on_settings(self):
@@ -543,6 +662,7 @@ class ThreadPanel(QFrame):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Running...")
+        self.remote_control.notify_script_status(True)
 
     def stop(self):
         if self.keyboard_executor:
@@ -592,6 +712,7 @@ class ThreadPanel(QFrame):
         self._update_undo_redo_buttons()
         self._update_lock_state()
         self._refresh_blocks_area()
+        self.remote_control.notify_script_status(False)
 
     # -- logging --------------------------------------------------------------
 

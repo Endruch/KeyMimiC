@@ -26,6 +26,7 @@ class HotkeyConfig:
     def __init__(self):
         self.hotkeys = {k: dict(v) for k, v in DEFAULT_HOTKEYS.items()}
         self.record_mouse = True
+        self.last_connect_ip = ""
         self.load()
         self._normalize()
 
@@ -38,6 +39,7 @@ class HotkeyConfig:
                     if action in self.hotkeys:
                         self.hotkeys[action] = binding
                 self.record_mouse = data.get("record_mouse", True)
+                self.last_connect_ip = data.get("last_connect_ip", "")
             except Exception:
                 pass
 
@@ -63,7 +65,11 @@ class HotkeyConfig:
             APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
             with open(HOTKEYS_FILE, "w", encoding="utf-8") as f:
                 json.dump(
-                    {"hotkeys": self.hotkeys, "record_mouse": self.record_mouse},
+                    {
+                        "hotkeys": self.hotkeys,
+                        "record_mouse": self.record_mouse,
+                        "last_connect_ip": self.last_connect_ip,
+                    },
                     f, ensure_ascii=False, indent=2,
                 )
         except Exception:

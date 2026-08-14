@@ -14,7 +14,8 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
 import queue
 
 from ..config import HotkeyConfig
-from ..managers import HotkeyManager
+from ..managers import HotkeyManager, RemoteControlManager
+from ..network import PeerConnection
 from .thread_panel import ThreadPanel
 from . import styles
 
@@ -28,6 +29,9 @@ class MainWindow(QMainWindow):
 
         self.hotkey_config = HotkeyConfig()
         self.hotkey_manager = HotkeyManager()
+        self.peer = PeerConnection()
+        self.remote_control = RemoteControlManager(self.peer, parent=self)
+        self.remote_control.start()
 
         self._build_ui()
 
@@ -44,7 +48,10 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        self.panel = ThreadPanel(1, self.hotkey_config, on_hotkeys_changed=self._register_hotkeys)
+        self.panel = ThreadPanel(
+            1, self.hotkey_config, self.peer, self.remote_control,
+            on_hotkeys_changed=self._register_hotkeys,
+        )
         outer.addWidget(self.panel, stretch=1)
 
     # -- hotkeys ----------------------------------------------------------
@@ -93,4 +100,6 @@ class MainWindow(QMainWindow):
         self.panel.join_executors()
         self.panel.cancel_recording()
         self.hotkey_manager.stop()
+        self.remote_control.stop()
+        self.peer.disconnect()
         event.accept()

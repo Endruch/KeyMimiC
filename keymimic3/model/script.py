@@ -1,5 +1,5 @@
 """
-Script = metadata (name, loop, humanize) + two independent, parallel tracks:
+Script = metadata (name, loop) + two independent, parallel tracks:
 `keyboard_blocks` and `mouse_blocks`. Both tracks start together when the
 script runs and each proceeds through its own blocks at its own pace (see
 execution.executor) - real recorded gaps within a track keep the two in
@@ -21,7 +21,6 @@ class Script:
     version: int = SCRIPT_FORMAT_VERSION
     thread_name: str = "Macro"
     loop: bool = True
-    humanize: int = 0
     keyboard_blocks: List[Block] = field(default_factory=list)
     mouse_blocks: List[Block] = field(default_factory=list)
 
@@ -30,7 +29,6 @@ class Script:
             "version": self.version,
             "thread_name": self.thread_name,
             "loop": self.loop,
-            "humanize": self.humanize,
             "keyboard_blocks": [b.to_dict() for b in self.keyboard_blocks],
             "mouse_blocks": [b.to_dict() for b in self.mouse_blocks],
         }
@@ -41,7 +39,6 @@ class Script:
             version=d.get("version", SCRIPT_FORMAT_VERSION),
             thread_name=d.get("thread_name", "Macro"),
             loop=d.get("loop", True),
-            humanize=d.get("humanize", 0),
             keyboard_blocks=[Block.from_dict(b) for b in d.get("keyboard_blocks", [])],
             mouse_blocks=[Block.from_dict(b) for b in d.get("mouse_blocks", [])],
         )

@@ -22,6 +22,9 @@ DISABLED_OFF_COLOR = "#4b4f56"  # ON/OFF toggle button when the block is disable
 REMOTE_ARMED_BG = "#16a34a"        # this machine is controlling the peer
 REMOTE_CONTROLLED_BG = "#ef4444"   # this machine is being controlled by the peer
 
+RUNNING_STATUS_BRIGHT = "#22c55e"  # "Running..." status label, blink on-phase
+RUNNING_STATUS_DIM = "#14532d"     # "Running..." status label, blink off-phase
+
 BACKGROUND = "#1e1f22"
 PANEL_BG = "#26282c"
 CARD_BG = "#2f3136"

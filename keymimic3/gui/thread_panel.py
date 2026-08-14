@@ -16,7 +16,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
-    QCheckBox, QSpinBox, QScrollArea, QPlainTextEdit, QMessageBox,
+    QCheckBox, QScrollArea, QPlainTextEdit, QMessageBox,
     QInputDialog, QWidget, QLineEdit,
 )
 
@@ -32,6 +32,7 @@ from . import styles
 LOG_MAX_LINES = 300
 MOUSE_POS_POLL_MS = 100
 RECORDING_PREVIEW_POLL_MS = 500
+STATUS_BLINK_HALF_PERIOD_MS = 250  # half of a 0.5s on/off blink period for the "Running..." status
 
 
 class ThreadPanel(QFrame):
@@ -64,6 +65,7 @@ class ThreadPanel(QFrame):
         self.is_recording = False
 
         self._build_ui()
+        self._update_save_button()
         self._refresh_blocks_area()
 
         self._mouse_pos_timer = QTimer(self)
@@ -72,6 +74,10 @@ class ThreadPanel(QFrame):
 
         self._recording_preview_timer = QTimer(self)
         self._recording_preview_timer.timeout.connect(self._refresh_blocks_area)
+
+        self._status_blink_on = True
+        self._status_blink_timer = QTimer(self)
+        self._status_blink_timer.timeout.connect(self._on_status_blink_tick)
 
         self.peer.connected.connect(self._on_net_connected)
         self.peer.disconnected.connect(self._on_net_disconnected)
@@ -96,6 +102,7 @@ class ThreadPanel(QFrame):
         self._dirty = True
         self._update_undo_redo_buttons()
         self._update_start_button()
+        self._update_save_button()
         QTimer.singleShot(0, self._refresh_blocks_area)
 
     # -- UI construction ------------------------------------------------------
@@ -131,22 +138,20 @@ class ThreadPanel(QFrame):
         self.record_btn.clicked.connect(self._on_toggle_recording)
         toolbar1.addWidget(self.record_btn)
 
-        self.settings_btn = QPushButton("Settings")
-        self.settings_btn.clicked.connect(self._on_settings)
-        toolbar1.addWidget(self.settings_btn)
-
         self.loop_check = QCheckBox("Loop")
         self.loop_check.setChecked(self.script.loop)
         self.loop_check.toggled.connect(self._on_loop_toggled)
         toolbar1.addWidget(self.loop_check)
 
-        toolbar1.addWidget(QLabel("Humanize %:"))
-        self.humanize_spin = QSpinBox()
-        self.humanize_spin.setRange(0, 100)
-        self.humanize_spin.setValue(self.script.humanize)
-        self.humanize_spin.editingFinished.connect(self._on_humanize_changed)
-        toolbar1.addWidget(self.humanize_spin)
         toolbar1.addStretch()
+
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.clicked.connect(self._on_settings)
+        toolbar1.addWidget(self.settings_btn)
+
+        self.help_btn = QPushButton("Help")
+        self.help_btn.clicked.connect(self._on_help)
+        toolbar1.addWidget(self.help_btn)
         root.addLayout(toolbar1)
 
         toolbar2 = QHBoxLayout()
@@ -158,7 +163,6 @@ class ThreadPanel(QFrame):
         toolbar2.addWidget(self.redo_btn)
 
         self.save_btn = QPushButton("Save")
-        self.save_btn.setObjectName("PrimaryButton")
         self.save_btn.clicked.connect(self._on_save)
         toolbar2.addWidget(self.save_btn)
         toolbar2.addStretch()
@@ -202,7 +206,7 @@ class ThreadPanel(QFrame):
         self.start_btn.clicked.connect(self.start)
         bottom.addWidget(self.start_btn)
         self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setEnabled(False)
+        self.stop_btn.setVisible(False)
         self.stop_btn.clicked.connect(self.stop)
         bottom.addWidget(self.stop_btn)
         self.status_label = QLabel("Stopped")
@@ -245,7 +249,7 @@ class ThreadPanel(QFrame):
         locked = self.is_locked()
         for w in (
             self.profile_combo, self.new_profile_btn, self.rename_profile_btn,
-            self.delete_profile_btn, self.loop_check, self.humanize_spin,
+            self.delete_profile_btn, self.loop_check,
             self.settings_btn,
         ):
             w.setEnabled(not locked)
@@ -287,9 +291,6 @@ class ThreadPanel(QFrame):
         self.loop_check.blockSignals(True)
         self.loop_check.setChecked(self.script.loop)
         self.loop_check.blockSignals(False)
-        self.humanize_spin.blockSignals(True)
-        self.humanize_spin.setValue(self.script.humanize)
-        self.humanize_spin.blockSignals(False)
 
     # -- mouse position footer -------------------------------------------------
 
@@ -311,6 +312,7 @@ class ThreadPanel(QFrame):
         self._dirty = True
         self._update_undo_redo_buttons()
         self._update_start_button()
+        self._update_save_button()
         self._refresh_blocks_area()
 
     def _on_redo(self):
@@ -321,6 +323,7 @@ class ThreadPanel(QFrame):
         self._dirty = True
         self._update_undo_redo_buttons()
         self._update_start_button()
+        self._update_save_button()
         self._refresh_blocks_area()
 
     # -- dirty / save state ----------------------------------------------------
@@ -334,9 +337,19 @@ class ThreadPanel(QFrame):
             self.start_btn.setEnabled(False)
             self.start_btn.setToolTip(str(exc))
 
+    def _update_save_button(self):
+        if self._dirty:
+            self.save_btn.setStyleSheet(
+                f"background-color: {styles.ACCENT}; border: 1px solid {styles.ACCENT}; "
+                f"color: white; font-weight: 600;"
+            )
+        else:
+            self.save_btn.setStyleSheet("")
+
     def _on_save(self):
         self.profile_manager.update_profile(self.current_profile, self.script)
         self._dirty = False
+        self._update_save_button()
         self._log(f"Saved profile '{self.current_profile}'")
 
     def _confirm_discard_if_dirty(self) -> bool:
@@ -376,6 +389,7 @@ class ThreadPanel(QFrame):
         self._undo_stack = [self.script.to_dict()]
         self._undo_index = 0
         self._dirty = False
+        self._update_save_button()
         self.current_block_ids = set()
         self._update_undo_redo_buttons()
         self._update_start_button()
@@ -434,10 +448,6 @@ class ThreadPanel(QFrame):
 
     def _on_loop_toggled(self, checked):
         self.script.loop = checked
-        self.notify_change()
-
-    def _on_humanize_changed(self):
-        self.script.humanize = self.humanize_spin.value()
         self.notify_change()
 
     # -- recording ----------------------------------------------------------
@@ -627,6 +637,9 @@ class ThreadPanel(QFrame):
                 self.on_hotkeys_changed()
         SettingsDialog(self, self.hotkey_config, on_save=_on_saved).exec()
 
+    def _on_help(self):
+        QMessageBox.information(self, "Help", "Help is still in development.")
+
     # -- run / stop -------------------------------------------------------
 
     def start(self):
@@ -652,11 +665,11 @@ class ThreadPanel(QFrame):
         # drift apart over long/looped runs.
         barrier = threading.Barrier(2) if self.script.loop else None
         self.keyboard_executor = ScriptExecutor(
-            self.script.keyboard_blocks, humanize=self.script.humanize, loop=self.script.loop,
+            self.script.keyboard_blocks, loop=self.script.loop,
             label=f"{label} [Keyboard]", sync_barrier=barrier,
         )
         self.mouse_executor = ScriptExecutor(
-            self.script.mouse_blocks, humanize=self.script.humanize, loop=self.script.loop,
+            self.script.mouse_blocks, loop=self.script.loop,
             label=f"{label} [Mouse]", sync_barrier=barrier,
         )
         for executor in (self.keyboard_executor, self.mouse_executor):
@@ -666,9 +679,13 @@ class ThreadPanel(QFrame):
             executor.signals.stopped.connect(self._on_executor_stopped)
             executor.start()
 
-        self.start_btn.setEnabled(False)
+        self.start_btn.setVisible(False)
+        self.stop_btn.setVisible(True)
         self.stop_btn.setEnabled(True)
         self.status_label.setText("Running...")
+        self._status_blink_on = True
+        self._on_status_blink_tick()
+        self._status_blink_timer.start(STATUS_BLINK_HALF_PERIOD_MS)
         self.remote_control.notify_script_status(True)
 
     def stop(self):
@@ -703,6 +720,11 @@ class ThreadPanel(QFrame):
             widget.set_current(False)
         self.current_block_ids.discard(block_id)
 
+    def _on_status_blink_tick(self):
+        color = styles.RUNNING_STATUS_BRIGHT if self._status_blink_on else styles.RUNNING_STATUS_DIM
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
+        self._status_blink_on = not self._status_blink_on
+
     def _on_executor_stopped(self):
         # Emitted once per track's executor - only finalize once both are done.
         self._stopped_count += 1
@@ -712,8 +734,10 @@ class ThreadPanel(QFrame):
         self.keyboard_executor = None
         self.mouse_executor = None
         self.current_block_ids = set()
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+        self.start_btn.setVisible(True)
+        self.stop_btn.setVisible(False)
+        self._status_blink_timer.stop()
+        self.status_label.setStyleSheet("")
         self.status_label.setText("Stopped")
         self._update_start_button()
         self._update_undo_redo_buttons()

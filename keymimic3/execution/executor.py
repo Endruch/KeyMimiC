@@ -57,11 +57,10 @@ class ExecutorSignals(QObject):
 class ScriptExecutor(threading.Thread):
     """Runs one track's blocks in a background thread, reporting via Qt signals."""
 
-    def __init__(self, blocks, humanize: int = 0, loop: bool = True, label: str = "Macro",
+    def __init__(self, blocks, loop: bool = True, label: str = "Macro",
                  sync_barrier: threading.Barrier = None):
         super().__init__(daemon=True)
         self.blocks = blocks
-        self.humanize = humanize
         self.loop = loop
         self.label = label
         self.sync_barrier = sync_barrier
@@ -298,14 +297,10 @@ class ScriptExecutor(threading.Thread):
             self._release(code)
 
     def _sleep(self, duration, max_variation=None):
-        """Interruptible sleep with optional humanize jitter (checked every 50ms)."""
+        """Interruptible sleep, with optional per-step +/- random variation (checked every 50ms)."""
         duration = float(duration)
-        humanize = self.humanize or 0
-        if humanize > 0:
-            variation = duration * (humanize / 100.0)
-            if max_variation is not None:
-                variation = min(variation, float(max_variation))
-            duration = max(0.0, duration + random.uniform(-variation, variation))
+        if max_variation:
+            duration = max(0.0, duration + random.uniform(-max_variation, max_variation))
 
         end_time = time.time() + duration
         while time.time() < end_time:

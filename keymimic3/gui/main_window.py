@@ -31,12 +31,17 @@ class MainWindow(QMainWindow):
         self.hotkey_manager = HotkeyManager()
         self.peer = PeerConnection()
         self.remote_control = RemoteControlManager(self.peer, parent=self)
-        self.remote_control.start()
 
         self._build_ui()
 
         self._register_hotkeys()
         self.hotkey_manager.start()
+        # Windows calls low-level hook chains in reverse install order (most
+        # recently installed first) - starting this one last means it always
+        # gets first look at a key event and can suppress it before
+        # HotkeyManager's hook ever sees it, so a forwarded combo that also
+        # happens to match a *local* hotkey can't double-fire here too.
+        self.remote_control.start()
 
         self._hotkey_timer = QTimer(self)
         self._hotkey_timer.timeout.connect(self._poll_hotkeys)

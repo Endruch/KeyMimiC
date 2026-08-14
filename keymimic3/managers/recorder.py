@@ -44,7 +44,7 @@ import time
 
 from PySide6.QtCore import QObject, Signal
 
-from ..core.hooks import KeyboardHook, MouseHook
+from ..core.hooks import MouseHook
 from ..core.constants import SCAN_TO_CODE, SCAN_TO_CODE_EXT, IS_WINDOWS
 from ..core.input import get_mouse_position, is_cursor_visible
 from ..model import Block, Step, MousePathPoint
@@ -90,7 +90,17 @@ class RecorderSignals(QObject):
 
 
 class Recorder:
-    """Records keyboard (and optionally mouse) input using composition over the hooks."""
+    """
+    Records keyboard (and optionally mouse) input.
+
+    Unlike the mouse hook (owned/started here directly), keyboard events
+    are NOT captured through a hook of Recorder's own - MainWindow owns a
+    single shared keyboard hook for the whole app and calls
+    _on_keyboard_event() directly whenever a Recorder is currently
+    recording, so there's only ever one low-level keyboard hook installed
+    at a time instead of a separate one per feature (see MainWindow's
+    _on_shared_keyboard_event).
+    """
 
     def __init__(self, record_mouse: bool = False):
         self.record_mouse = record_mouse
@@ -101,7 +111,6 @@ class Recorder:
         self._last_keyboard_time = None
         self._last_mouse_event_time = None
 
-        self.keyboard_hook = None
         self.mouse_hook = None
 
         self._last_mouse_pos = None
@@ -154,9 +163,6 @@ class Recorder:
         self._left_held = False
         self._right_held = False
 
-        self.keyboard_hook = KeyboardHook(self._on_keyboard_event)
-        self.keyboard_hook.start()
-
         if self.record_mouse:
             self.mouse_hook = MouseHook(self._on_mouse_event)
             self.mouse_hook.start()
@@ -165,9 +171,6 @@ class Recorder:
         """Stop recording and return (keyboard_blocks, mouse_blocks)."""
         self.recording = False
 
-        if self.keyboard_hook:
-            self.keyboard_hook.stop()
-            self.keyboard_hook = None
         if self.mouse_hook:
             self.mouse_hook.stop()
             self.mouse_hook = None

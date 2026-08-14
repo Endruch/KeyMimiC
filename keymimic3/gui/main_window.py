@@ -7,6 +7,13 @@ can't be, in practice - start_recording() already refuses to start while
 running - but the guard is cheap and makes the intent explicit). Recording
 itself only ever captures real hardware input regardless (Recorder filters
 out SendInput-injected events).
+
+Exactly two low-level keyboard hooks exist for the app's whole lifetime:
+HotkeyManager's own (global hotkeys), and one shared hook owned right here
+that both Recorder (while actively recording) and RemoteControlManager
+(while armed) feed off of - see _on_shared_keyboard_event. A third,
+separate hook for remote control used to exist and was found to interfere
+with HotkeyManager's, breaking global hotkeys.
 """
 
 from PySide6.QtCore import QTimer
@@ -14,6 +21,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout
 import queue
 
 from ..config import HotkeyConfig
+from ..core.hooks import KeyboardHook
 from ..managers import HotkeyManager, RemoteControlManager
 from ..network import PeerConnection
 from .thread_panel import ThreadPanel
@@ -37,6 +45,10 @@ class MainWindow(QMainWindow):
 
         self._register_hotkeys()
         self.hotkey_manager.start()
+
+        # Shared with Recorder/RemoteControlManager - see _on_shared_keyboard_event.
+        self._input_hook = KeyboardHook(self._on_shared_keyboard_event)
+        self._input_hook.start()
 
         self._hotkey_timer = QTimer(self)
         self._hotkey_timer.timeout.connect(self._poll_hotkeys)
@@ -90,6 +102,23 @@ class MainWindow(QMainWindow):
             if self.panel.is_recording:
                 self.panel.stop_recording()
 
+    # -- shared keyboard hook (recording + armed remote control) ------------
+
+    def _on_shared_keyboard_event(self, nCode, wParam, kb_struct):
+        """
+        Routes one physical key event to whichever of Recorder/
+        RemoteControlManager currently cares about it - at most one of the
+        two is ever active at a time in normal use. Recorder's handler
+        never suppresses (always returns None/falsy); RemoteControlManager's
+        can, to keep this machine's own input from leaking out while armed.
+        """
+        recorder = self.panel.recorder
+        if recorder is not None and recorder.recording:
+            return recorder._on_keyboard_event(nCode, wParam, kb_struct)
+        if self.remote_control.armed:
+            return self.remote_control._on_keyboard_event(nCode, wParam, kb_struct)
+        return False
+
     # -- shutdown -----------------------------------------------------------
 
     def closeEvent(self, event):
@@ -100,6 +129,7 @@ class MainWindow(QMainWindow):
         self.panel.join_executors()
         self.panel.cancel_recording()
         self.hotkey_manager.stop()
+        self._input_hook.stop()
         self.remote_control.stop()
         self.peer.disconnect()
         event.accept()

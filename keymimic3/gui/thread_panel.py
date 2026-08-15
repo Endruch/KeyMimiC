@@ -38,7 +38,8 @@ STATUS_BLINK_HALF_PERIOD_MS = 250  # half of a 0.5s on/off blink period for the 
 class ThreadPanel(QFrame):
     """The (single) macro thread panel."""
 
-    def __init__(self, panel_id, hotkey_config, peer, remote_control, on_hotkeys_changed=None, parent=None):
+    def __init__(self, panel_id, hotkey_config, peer, remote_control, on_hotkeys_changed=None,
+                 on_recording_changed=None, parent=None):
         super().__init__(parent)
         self.setObjectName("ThreadPanel")
         self.panel_id = panel_id
@@ -46,6 +47,7 @@ class ThreadPanel(QFrame):
         self.peer = peer
         self.remote_control = remote_control
         self.on_hotkeys_changed = on_hotkeys_changed
+        self.on_recording_changed = on_recording_changed
 
         self.profile_manager = ProfileManager(panel_id)
         self.current_profile = self.profile_manager.get_profile_names()[0]
@@ -485,6 +487,8 @@ class ThreadPanel(QFrame):
         self.recorder.start(record_mouse=self.hotkey_config.record_mouse)
         self._recording_preview_timer.start(RECORDING_PREVIEW_POLL_MS)
         self._log("Recording started...")
+        if self.on_recording_changed:
+            self.on_recording_changed()
 
     def _on_recorder_control_hotkey(self, action):
         if action == "stop_record":
@@ -502,6 +506,8 @@ class ThreadPanel(QFrame):
         self._update_hotkey_labels()
         self._update_lock_state()
         self._update_start_button()
+        if self.on_recording_changed:
+            self.on_recording_changed()
 
     def stop_recording(self):
         if not self.is_recording or not self.recorder:
@@ -521,6 +527,12 @@ class ThreadPanel(QFrame):
         had_activity = bool(self.recorder.keyboard_events or self.recorder.mouse_events)
         keyboard_blocks, mouse_blocks = self.recorder.stop()
         self.recorder = None
+        # Only now does panel.recorder actually reflect "not recording" -
+        # MainWindow's _update_shared_hook() checks panel.recorder.recording,
+        # so firing this any earlier would see the still-live recorder and
+        # wrongly decide the shared hook is still needed.
+        if self.on_recording_changed:
+            self.on_recording_changed()
 
         if not had_activity:
             self._log("Recording stopped - nothing was captured, no profile created.")

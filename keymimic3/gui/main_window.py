@@ -8,12 +8,18 @@ running - but the guard is cheap and makes the intent explicit). Recording
 itself only ever captures real hardware input regardless (Recorder filters
 out SendInput-injected events).
 
-Exactly two low-level keyboard hooks exist for the app's whole lifetime:
-HotkeyManager's own (global hotkeys), and one shared hook owned right here
-that both Recorder (while actively recording) and RemoteControlManager
-(while armed) feed off of - see _on_shared_keyboard_event. A third,
-separate hook for remote control used to exist and was found to interfere
-with HotkeyManager's, breaking global hotkeys.
+HotkeyManager's own hook is the only one installed for the app's entire
+lifetime. A second, shared hook (owned right here, used by Recorder while
+actively recording and RemoteControlManager while armed - see
+_on_shared_keyboard_event) is installed *only* while one of those is
+actually active, and torn down the moment neither is - see
+_update_shared_hook. This mirrors how Recorder's hook always behaved before
+Phase 2 (installed only for the duration of an actual recording, not for
+the app's whole lifetime). A version of this second hook that stayed
+installed continuously from startup was tried and still interfered with
+HotkeyManager's hook, breaking global hotkeys - keeping two low-level
+keyboard hooks *simultaneously active most of the time* was the problem,
+not merely having more than one hook class in the codebase.
 """
 
 from PySide6.QtCore import QTimer
@@ -40,15 +46,14 @@ class MainWindow(QMainWindow):
         self.peer = PeerConnection()
         self.remote_control = RemoteControlManager(self.peer, parent=self)
         self.remote_control.start()
+        self.remote_control.armed_changed.connect(lambda _armed: self._update_shared_hook())
+
+        self._input_hook = None  # installed/removed on demand - see _update_shared_hook
 
         self._build_ui()
 
         self._register_hotkeys()
         self.hotkey_manager.start()
-
-        # Shared with Recorder/RemoteControlManager - see _on_shared_keyboard_event.
-        self._input_hook = KeyboardHook(self._on_shared_keyboard_event)
-        self._input_hook.start()
 
         self._hotkey_timer = QTimer(self)
         self._hotkey_timer.timeout.connect(self._poll_hotkeys)
@@ -63,6 +68,7 @@ class MainWindow(QMainWindow):
         self.panel = ThreadPanel(
             1, self.hotkey_config, self.peer, self.remote_control,
             on_hotkeys_changed=self._register_hotkeys,
+            on_recording_changed=self._update_shared_hook,
         )
         outer.addWidget(self.panel, stretch=1)
 
@@ -104,6 +110,30 @@ class MainWindow(QMainWindow):
 
     # -- shared keyboard hook (recording + armed remote control) ------------
 
+    def _update_shared_hook(self):
+        """
+        Install the shared hook only while it's actually needed (recording
+        or armed), tear it down the moment neither is true anymore. Two
+        low-level keyboard hooks installed *simultaneously, continuously*
+        (this one running for the app's whole lifetime alongside
+        HotkeyManager's) was found to interfere with HotkeyManager's own
+        hook and break global hotkeys, even though only two hook classes
+        existed - it was the near-constant simultaneous presence, not the
+        count in the abstract, that mattered. Keeping this one installed
+        only for the actual duration it's needed (mirroring how Recorder's
+        hook always worked, even before Phase 2) keeps HotkeyManager's hook
+        alone almost all the time, same as the last known-good state.
+        """
+        needed = self.remote_control.armed or (
+            self.panel.recorder is not None and self.panel.recorder.recording
+        )
+        if needed and self._input_hook is None:
+            self._input_hook = KeyboardHook(self._on_shared_keyboard_event)
+            self._input_hook.start()
+        elif not needed and self._input_hook is not None:
+            self._input_hook.stop()
+            self._input_hook = None
+
     def _on_shared_keyboard_event(self, nCode, wParam, kb_struct):
         """
         Routes one physical key event to whichever of Recorder/
@@ -129,7 +159,9 @@ class MainWindow(QMainWindow):
         self.panel.join_executors()
         self.panel.cancel_recording()
         self.hotkey_manager.stop()
-        self._input_hook.stop()
+        if self._input_hook is not None:
+            self._input_hook.stop()
+            self._input_hook = None
         self.remote_control.stop()
         self.peer.disconnect()
         event.accept()

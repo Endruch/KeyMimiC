@@ -469,6 +469,7 @@ class ThreadPanel(QFrame):
             return
         if self.is_recording or self.running:
             return
+        self.remote_control.disarm_for_recording()
         self.is_recording = True
         self._update_hotkey_labels()
         self._update_lock_state()

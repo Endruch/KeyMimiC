@@ -48,6 +48,15 @@ WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
 WM_SYSKEYUP = 0x0105
 
+# LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED - same as Recorder's mask (see
+# managers/recorder.py). Without this, a local macro running on this same
+# machine (nothing prevents ScriptExecutor and armed remote control from
+# being active at once - ThreadPanel.is_locked() never checks .armed) would
+# have its own SendInput-injected keys picked up here as if they were real
+# physical presses: suppressed from reaching this machine's own target
+# window, and forwarded to the peer as if the user typed them there.
+LLKHF_INJECTED_MASK = 0x10 | 0x02
+
 CAPSLOCK_POLL_MS = 50
 
 
@@ -81,6 +90,13 @@ class RemoteControlManager(QObject):
         if self._poll_timer is not None:
             self._poll_timer.stop()
             self._poll_timer = None
+        # Restore the lamp *before* clearing the flag, not after - app
+        # shutdown (MainWindow.closeEvent) calls this before peer.disconnect(),
+        # whose own disarm-on-disconnect path (_on_peer_disconnected) checks
+        # self.armed and would otherwise find it already False and skip
+        # tap_capslock(), leaving CapsLock lit after the process exits.
+        if self.armed:
+            tap_capslock()
         self.armed = False
         self.being_controlled = False
 
@@ -88,6 +104,21 @@ class RemoteControlManager(QObject):
         """Called by ThreadPanel on every local start/stop, broadcast to the peer if connected."""
         if self.peer.is_connected():
             self.peer.send({"type": "script_status", "running": running})
+
+    def disarm_for_recording(self):
+        """
+        Called by ThreadPanel right before a local recording starts. Can't
+        do both at once - the shared keyboard hook always favors an active
+        Recorder over armed remote control (see MainWindow's
+        _on_shared_keyboard_event), which would otherwise leave this
+        machine silently "armed but not actually forwarding anything" for
+        the whole recording, with the peer still believing it's being
+        controlled. Disarming outright (lamp off, peer notified) instead of
+        just letting it silently stall keeps the state honest.
+        """
+        if self.armed:
+            self._do_disarm(notify_peer=True)
+            tap_capslock()
 
     # -- CapsLock polling ---------------------------------------------------
 
@@ -105,6 +136,13 @@ class RemoteControlManager(QObject):
         if not self.peer.is_connected():
             return  # CapsLock behaves as a normal OS toggle without an active connection
         self.armed = True
+        # armed and being_controlled are mutually exclusive - taking control
+        # back (the peer had been controlling this machine) must clear the
+        # stale flag now, or it lingers after a later _do_disarm() and shows
+        # this machine's UI as "being controlled" when nobody controls it.
+        if self.being_controlled:
+            self.being_controlled = False
+            self.being_controlled_changed.emit(False)
         self.peer.send({"type": "arm"})
         self.armed_changed.emit(True)
 
@@ -121,6 +159,8 @@ class RemoteControlManager(QObject):
             return False
         if wParam not in (WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP):
             return False
+        if kb_struct.flags & LLKHF_INJECTED_MASK:
+            return False  # a local macro's own SendInput, not the real user - never forward or suppress it
 
         extended = (kb_struct.flags & 0x1) != 0
         code = (SCAN_TO_CODE_EXT if extended else SCAN_TO_CODE).get(kb_struct.scanCode)

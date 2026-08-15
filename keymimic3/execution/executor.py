@@ -68,6 +68,7 @@ class ScriptExecutor(threading.Thread):
 
         self._stop_event = threading.Event()
         self._held_keys = set()
+        self._held_mouse_buttons = set()
 
     def stop(self):
         self._stop_event.set()
@@ -99,6 +100,7 @@ class ScriptExecutor(threading.Thread):
                         break
         finally:
             self._release_all_held_keys()
+            self._release_all_held_mouse_buttons()
             self._log("Stopped")
             self.signals.stopped.emit()
 
@@ -267,9 +269,19 @@ class ScriptExecutor(threading.Thread):
                 f"WARNING: SendInput blocked for {button} mouse-down - the target window may be "
                 f"running with higher privileges (try running KeyMimic as Administrator)"
             )
+        self._held_mouse_buttons.add(button)
 
     def _mouse_up(self, button):
         send_mouse_button_up(button)
+        self._held_mouse_buttons.discard(button)
+
+    def _release_all_held_mouse_buttons(self):
+        # Mirrors _release_all_held_keys - Stop can land between a mouse
+        # path's *_down and *_up points (e.g. a click-and-drag gesture),
+        # which would otherwise leave a mouse button physically stuck down
+        # system-wide until the user manually clicks again.
+        for button in list(self._held_mouse_buttons):
+            self._mouse_up(button)
 
     def _press(self, key):
         try:

@@ -24,9 +24,8 @@ from ..model import Script, validate_script, ScriptValidationError
 from ..managers import ProfileManager, Recorder
 from ..execution import ScriptExecutor
 from ..core.constants import IS_WINDOWS
-from ..core.input import get_mouse_position
+from ..core.input import get_mouse_position, tap_capslock
 from .block_widgets import BlockListPanel
-from .settings_dialog import SettingsDialog
 from . import styles
 
 LOG_MAX_LINES = 300
@@ -38,7 +37,7 @@ STATUS_BLINK_HALF_PERIOD_MS = 250  # half of a 0.5s on/off blink period for the 
 class ThreadPanel(QFrame):
     """The (single) macro thread panel."""
 
-    def __init__(self, panel_id, hotkey_config, peer, remote_control, on_hotkeys_changed=None,
+    def __init__(self, panel_id, hotkey_config, peer, remote_control,
                  on_recording_changed=None, parent=None):
         super().__init__(parent)
         self.setObjectName("ThreadPanel")
@@ -46,7 +45,6 @@ class ThreadPanel(QFrame):
         self.hotkey_config = hotkey_config
         self.peer = peer
         self.remote_control = remote_control
-        self.on_hotkeys_changed = on_hotkeys_changed
         self.on_recording_changed = on_recording_changed
 
         self.profile_manager = ProfileManager(panel_id)
@@ -87,6 +85,7 @@ class ThreadPanel(QFrame):
         self.remote_control.armed_changed.connect(self._on_armed_changed)
         self.remote_control.being_controlled_changed.connect(self._on_being_controlled_changed)
         self.remote_control.peer_script_status_changed.connect(self._on_peer_script_status_changed)
+        self.remote_control.capslock_state_changed.connect(self._on_capslock_state_changed)
 
     # -- panel interface used by block_widgets.py --------------------------
 
@@ -144,16 +143,7 @@ class ThreadPanel(QFrame):
         self.loop_check.setChecked(self.script.loop)
         self.loop_check.toggled.connect(self._on_loop_toggled)
         toolbar1.addWidget(self.loop_check)
-
         toolbar1.addStretch()
-
-        self.settings_btn = QPushButton("Settings")
-        self.settings_btn.clicked.connect(self._on_settings)
-        toolbar1.addWidget(self.settings_btn)
-
-        self.help_btn = QPushButton("Help")
-        self.help_btn.clicked.connect(self._on_help)
-        toolbar1.addWidget(self.help_btn)
         root.addLayout(toolbar1)
 
         toolbar2 = QHBoxLayout()
@@ -193,6 +183,15 @@ class ThreadPanel(QFrame):
         self.net_disconnect_btn.clicked.connect(self._on_disconnect)
         self.net_disconnect_btn.setVisible(False)
         net_row.addWidget(self.net_disconnect_btn)
+
+        # Visual proof that CapsLock arm/disarm is actually being read by the
+        # program (green when the real lamp is lit, gray when not) - also
+        # clickable, which just taps the real key so it goes through the
+        # exact same arm/disarm path a physical press would.
+        self.capslock_btn = QPushButton("CapsLock")
+        self.capslock_btn.setToolTip("Shows the real CapsLock lamp state - click to toggle it")
+        self.capslock_btn.clicked.connect(lambda: tap_capslock())
+        net_row.addWidget(self.capslock_btn)
 
         net_row.addStretch()
         root.addLayout(net_row)
@@ -252,7 +251,6 @@ class ThreadPanel(QFrame):
         for w in (
             self.profile_combo, self.new_profile_btn, self.rename_profile_btn,
             self.delete_profile_btn, self.loop_check,
-            self.settings_btn,
         ):
             w.setEnabled(not locked)
         # Only gated by "running", not "recording" - otherwise there'd be no way
@@ -484,7 +482,7 @@ class ThreadPanel(QFrame):
             "stop_record": self.hotkey_config.get_hotkey("stop_record"),
         })
         self.recorder.signals.control_hotkey.connect(self._on_recorder_control_hotkey)
-        self.recorder.start(record_mouse=self.hotkey_config.record_mouse)
+        self.recorder.start(record_mouse=True)
         self._recording_preview_timer.start(RECORDING_PREVIEW_POLL_MS)
         self._log("Recording started...")
         if self.on_recording_changed:
@@ -641,17 +639,14 @@ class ThreadPanel(QFrame):
         self.peer_status_label.setStyleSheet(f"color: {color}; font-weight: 600;")
         self.peer_status_label.setVisible(True)
 
-    # -- settings -------------------------------------------------------------
-
-    def _on_settings(self):
-        def _on_saved():
-            self._update_hotkey_labels()
-            if self.on_hotkeys_changed:
-                self.on_hotkeys_changed()
-        SettingsDialog(self, self.hotkey_config, on_save=_on_saved).exec()
-
-    def _on_help(self):
-        QMessageBox.information(self, "Help", "Help is still in development.")
+    def _on_capslock_state_changed(self, is_on):
+        if is_on:
+            self.capslock_btn.setStyleSheet(
+                f"background-color: {styles.REMOTE_ARMED_BG}; border: 1px solid {styles.REMOTE_ARMED_BG}; "
+                f"color: white; font-weight: 600;"
+            )
+        else:
+            self.capslock_btn.setStyleSheet("")
 
     # -- run / stop -------------------------------------------------------
 

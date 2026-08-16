@@ -1,89 +1,48 @@
-"""Persisted configuration for global hotkeys (works even while minimized)."""
+"""Hard-wired global hotkeys (work even while minimized) plus small persisted settings."""
 
 import json
 
 from ..core.key_names import get_key_display_name
 from .paths import APP_DATA_DIR, HOTKEYS_FILE
 
-DEFAULT_HOTKEYS = {
-    "start": {"key": "f6", "ctrl": False, "shift": True, "alt": False},
-    "stop": {"key": "f7", "ctrl": False, "shift": True, "alt": False},
+# Not user-configurable - there is no Settings UI to change these anymore.
+HOTKEYS = {
+    "start": {"key": "f8", "ctrl": True, "shift": False, "alt": False},
+    "stop": {"key": "f9", "ctrl": True, "shift": False, "alt": False},
     "start_record": {"key": "f8", "ctrl": False, "shift": True, "alt": False},
     "stop_record": {"key": "f9", "ctrl": False, "shift": True, "alt": False},
 }
 
-ACTION_LABELS = {
-    "start": "Start macro",
-    "stop": "Stop macro",
-    "start_record": "Start recording",
-    "stop_record": "Stop recording",
-}
-
 
 class HotkeyConfig:
-    """Loads/saves global hotkey bindings plus the record-mouse toggle."""
+    """Exposes the fixed hotkey bindings, plus the one small setting that's still persisted: last_connect_ip."""
 
     def __init__(self):
-        self.hotkeys = {k: dict(v) for k, v in DEFAULT_HOTKEYS.items()}
-        self.record_mouse = True
         self.last_connect_ip = ""
         self.load()
-        self._normalize()
 
     def load(self):
         if HOTKEYS_FILE.exists():
             try:
                 with open(HOTKEYS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                for action, binding in data.get("hotkeys", {}).items():
-                    if action in self.hotkeys:
-                        self.hotkeys[action] = binding
-                self.record_mouse = data.get("record_mouse", True)
                 self.last_connect_ip = data.get("last_connect_ip", "")
             except Exception:
                 pass
-
-    def _normalize(self):
-        """
-        Every hotkey must have exactly one modifier. Configs saved before this
-        was required (or otherwise malformed) get Shift as a safe default
-        instead of silently ending up with zero or multiple modifiers set.
-        """
-        changed = False
-        for binding in self.hotkeys.values():
-            flags = (binding.get("ctrl", False), binding.get("shift", False), binding.get("alt", False))
-            if sum(1 for f in flags if f) != 1:
-                binding["ctrl"] = False
-                binding["shift"] = True
-                binding["alt"] = False
-                changed = True
-        if changed:
-            self.save()
 
     def save(self):
         try:
             APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
             with open(HOTKEYS_FILE, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "hotkeys": self.hotkeys,
-                        "record_mouse": self.record_mouse,
-                        "last_connect_ip": self.last_connect_ip,
-                    },
-                    f, ensure_ascii=False, indent=2,
-                )
+                json.dump({"last_connect_ip": self.last_connect_ip}, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
     def get_hotkey(self, action):
-        return self.hotkeys.get(action, DEFAULT_HOTKEYS.get(action))
-
-    def set_hotkey(self, action, key, ctrl=False, shift=False, alt=False):
-        self.hotkeys[action] = {"key": key, "ctrl": ctrl, "shift": shift, "alt": alt}
-        self.save()
+        return HOTKEYS.get(action)
 
     def format_hotkey(self, action) -> str:
-        """Return a short display string, e.g. 'Ctrl+F6'."""
+        """Return a short display string, e.g. 'Ctrl+F8'."""
         binding = self.get_hotkey(action)
         if not binding:
             return ""

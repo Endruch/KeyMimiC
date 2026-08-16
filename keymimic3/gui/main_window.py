@@ -67,7 +67,6 @@ class MainWindow(QMainWindow):
 
         self.panel = ThreadPanel(
             1, self.hotkey_config, self.peer, self.remote_control,
-            on_hotkeys_changed=self._register_hotkeys,
             on_recording_changed=self._update_shared_hook,
         )
         outer.addWidget(self.panel, stretch=1)

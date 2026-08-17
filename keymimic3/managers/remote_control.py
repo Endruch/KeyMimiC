@@ -129,16 +129,16 @@ class RemoteControlManager(QObject):
 
     def _check_capslock_transition(self):
         """
-        Shared by the GUI-thread poll timer and (while armed - see
-        _on_keyboard_event) the hook thread's own direct check on every
-        observed CapsLock keydown. The direct hook-thread check exists
-        because the poll timer alone was found unreliable while a lot of
-        other keys were actively being forwarded at once: the lamp would
-        toggle off (real OS state) but this class's own bookkeeping could
-        miss/lag the transition, leaving forwarding stuck on until the
-        *other* machine's CapsLock was pressed instead. GetKeyState itself
-        is a cheap, fast call - safe to do directly on the hook thread,
-        same as HotkeyManager already does for its modifier-key checks.
+        GUI-thread poll, used only to detect the *unarmed -> armed*
+        transition (the shared keyboard hook isn't installed at all until
+        something - recording or being armed - needs it, so there's no
+        hook callback to react to yet at that point). The reverse
+        transition (armed -> disarmed) is handled separately and more
+        reliably directly inside _on_keyboard_event: re-reading
+        GetKeyState synchronously inside the hook callback for the very
+        CapsLock keydown that triggers it was found unreliable (the OS's
+        toggle-state bit isn't always observed to have updated yet at that
+        exact instant), so that path doesn't call this method at all.
         """
         state = get_capslock_toggle_state()
         if state == self._last_capslock_state:
@@ -186,10 +186,20 @@ class RemoteControlManager(QObject):
             return False
         if code == "caps":
             # Never intercepted - its own OS toggle/lamp keeps working as-is.
-            # Check the transition right here too (not just via the poll
-            # timer) - see _check_capslock_transition's docstring.
+            # This method only ever runs while self.armed (guarded above),
+            # so any CapsLock keydown reaching here must be the user turning
+            # it back off - deliberately NOT re-checking GetKeyState to
+            # confirm that: a fresh read here was found unreliable, since
+            # this callback fires synchronously as part of Windows
+            # processing *this very keydown*, and the OS's own toggle-state
+            # bit was not reliably observed to have updated yet at that
+            # exact instant - silently no-op'ing and requiring the *other*
+            # machine's CapsLock to disarm instead. Knowing we're armed
+            # already is a strictly more reliable signal than re-reading a
+            # value that might still reflect the pre-toggle state.
             if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                self._check_capslock_transition()
+                self._last_capslock_state = False  # keep the poll timer's bookkeeping in sync
+                self._do_disarm(notify_peer=True)
             return False
 
         is_down = wParam in (WM_KEYDOWN, WM_SYSKEYDOWN)

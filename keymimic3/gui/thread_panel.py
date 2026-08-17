@@ -162,6 +162,10 @@ class ThreadPanel(QFrame):
 
         net_row = QHBoxLayout()
         self.net_start_server_btn = QPushButton("Start Server")
+        self.net_start_server_btn.setToolTip(
+            "Start listening for the other computer to connect here. "
+            "Shows your local IP - type that into the other computer's IP field and hit Connect there."
+        )
         self.net_start_server_btn.clicked.connect(self._on_start_server)
         net_row.addWidget(self.net_start_server_btn)
 
@@ -173,9 +177,13 @@ class ThreadPanel(QFrame):
         self.net_connect_ip_edit.setPlaceholderText("IP address")
         self.net_connect_ip_edit.setFixedWidth(110)
         self.net_connect_ip_edit.setText(self.hotkey_config.last_connect_ip)
+        self.net_connect_ip_edit.setToolTip(
+            "IP address of the computer that clicked Start Server. Remembered between runs."
+        )
         net_row.addWidget(self.net_connect_ip_edit)
 
         self.net_connect_btn = QPushButton("Connect")
+        self.net_connect_btn.setToolTip("Connect to the computer whose IP is entered to the left.")
         self.net_connect_btn.clicked.connect(self._on_connect)
         net_row.addWidget(self.net_connect_btn)
 
@@ -188,8 +196,11 @@ class ThreadPanel(QFrame):
         # program (green when the real lamp is lit, gray when not) - also
         # clickable, which just taps the real key so it goes through the
         # exact same arm/disarm path a physical press would.
-        self.capslock_btn = QPushButton("CapsLock")
-        self.capslock_btn.setToolTip("Shows the real CapsLock lamp state - click to toggle it")
+        self.capslock_btn = QPushButton("Control Peer (CapsLock)")
+        self.capslock_btn.setToolTip(
+            "Green while CapsLock is on - your keys are being sent to the other computer. "
+            "Click here or press CapsLock to toggle it."
+        )
         self.capslock_btn.clicked.connect(lambda: tap_capslock())
         net_row.addWidget(self.capslock_btn)
 
@@ -588,7 +599,12 @@ class ThreadPanel(QFrame):
         self.net_connect_btn.setVisible(idle)
         self.net_status_label.setVisible(state != "idle")
         self.net_disconnect_btn.setVisible(not idle)
-        self.net_disconnect_btn.setText("Disconnect" if state == "connected" else "Stop Server")
+        if state == "connected":
+            self.net_disconnect_btn.setText("Disconnect")
+            self.net_disconnect_btn.setToolTip("End the connection to the other computer.")
+        else:
+            self.net_disconnect_btn.setText("Stop Server")
+            self.net_disconnect_btn.setToolTip("Cancel waiting for a connection.")
 
     def _on_net_connected(self):
         self.net_status_label.setText(f"Connected: {self.peer.peer_ip}")

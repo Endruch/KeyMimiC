@@ -202,6 +202,7 @@ class ThreadPanel(QFrame):
             "Click here or press CapsLock to toggle it."
         )
         self.capslock_btn.clicked.connect(lambda: tap_capslock())
+        self.capslock_btn.setVisible(False)
         net_row.addWidget(self.capslock_btn)
 
         net_row.addStretch()
@@ -599,6 +600,7 @@ class ThreadPanel(QFrame):
         self.net_connect_btn.setVisible(idle)
         self.net_status_label.setVisible(state != "idle")
         self.net_disconnect_btn.setVisible(not idle)
+        self.capslock_btn.setVisible(state == "connected")
         if state == "connected":
             self.net_disconnect_btn.setText("Disconnect")
             self.net_disconnect_btn.setToolTip("End the connection to the other computer.")

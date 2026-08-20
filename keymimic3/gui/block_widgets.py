@@ -838,10 +838,6 @@ class BlockListPanel(QWidget):
         self.add_btn.setEnabled(not panel.is_locked())
         add_row.addWidget(self.add_btn)
 
-        add_repeat_btn = QPushButton("+ Add Repeat")
-        add_repeat_btn.clicked.connect(self._on_add_repeat)
-        add_repeat_btn.setEnabled(not panel.is_locked())
-        add_row.addWidget(add_repeat_btn)
         add_row.addStretch()
         layout.addLayout(add_row)
 
